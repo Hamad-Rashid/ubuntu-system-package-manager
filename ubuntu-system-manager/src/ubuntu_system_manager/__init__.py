@@ -1,0 +1,2 @@
+"""Ubuntu System Manager package."""
+
