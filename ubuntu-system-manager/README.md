@@ -1,11 +1,18 @@
-# Ubuntu System Manager (Phase 1)
+# Ubuntu System Manager (Phase 2)
 
-Phase 1 implementation of the planned Ubuntu desktop app:
+Current implementation of the planned Ubuntu desktop app:
 
-- Read-only dashboard for RAM and storage
-- Read-only installed package list (APT + Snap) with update status
-- Read-only connected Bluetooth devices list with battery percentage (if available)
-- Read-only partition health list (mounted/not mounted/mount error)
+- Dashboard for RAM and storage
+- Installed package tabs:
+  - `All Installed`
+  - `Updates Available`
+- Per-package actions:
+  - `Update`
+  - `Remove`
+  - `Enable/Disable` (Snap packages)
+- Package action log in UI
+- Bluetooth/USB device panel with battery percentage (if available)
+- Partition health list (mounted/not mounted/mount error)
 
 ## Requirements
 
@@ -29,6 +36,8 @@ cd /media/hamad/Office/hamad/ubuntu-system-manager
 
 ## Notes
 
-- This phase is read-only; no update/remove/enable-disable/fix actions are executed.
 - Data is refreshed at startup and every 60 seconds, with manual refresh support.
+- Package update/remove/enable-disable actions run with `pkexec` and will request admin authentication.
+- Only one package operation is executed at a time.
+- `Enable/Disable` is supported for Snap packages; APT packages show this as unsupported.
 - Some Bluetooth devices do not expose battery percentage.

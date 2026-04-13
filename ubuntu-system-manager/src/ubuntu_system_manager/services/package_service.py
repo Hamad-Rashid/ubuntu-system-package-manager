@@ -39,8 +39,9 @@ class PackageService:
 
         entries: list[PackageEntry] = []
         for name, installed_version in installed.items():
+            update_available = name in upgradable
             latest_version = upgradable.get(name, installed_version)
-            status = "Update available" if name in upgradable else "Up-to-date"
+            status = "Update available" if update_available else "Up-to-date"
             entries.append(
                 PackageEntry(
                     name=name,
@@ -48,13 +49,16 @@ class PackageService:
                     installed_version=installed_version,
                     latest_version=latest_version,
                     status=status,
+                    update_available=update_available,
+                    can_toggle=False,
+                    enabled=True,
                 )
             )
         return entries
 
     def _read_snap_packages(self) -> list[PackageEntry]:
         snap_list_result = run_command(["snap", "list"], timeout=30)
-        installed: dict[str, str] = {}
+        installed: dict[str, tuple[str, str]] = {}
         if snap_list_result.ok:
             for idx, line in enumerate(snap_list_result.stdout.splitlines()):
                 if idx == 0:
@@ -64,7 +68,8 @@ class PackageService:
                     continue
                 name = parts[0]
                 version = parts[1]
-                installed[name] = version
+                notes = parts[5] if len(parts) >= 6 else "-"
+                installed[name] = (version, notes)
 
         refresh_result = run_command(["snap", "refresh", "--list"], timeout=30)
         upgradable: dict[str, str] = {}
@@ -78,9 +83,17 @@ class PackageService:
                 upgradable[parts[0]] = parts[1]
 
         entries: list[PackageEntry] = []
-        for name, installed_version in installed.items():
+        for name, details in installed.items():
+            installed_version, notes = details
+            enabled = "disabled" not in notes.lower()
+            update_available = name in upgradable
             latest_version = upgradable.get(name, installed_version)
-            status = "Update available" if name in upgradable else "Up-to-date"
+            if not enabled:
+                status = "Disabled"
+            elif update_available:
+                status = "Update available"
+            else:
+                status = "Up-to-date"
             entries.append(
                 PackageEntry(
                     name=name,
@@ -88,6 +101,9 @@ class PackageService:
                     installed_version=installed_version,
                     latest_version=latest_version,
                     status=status,
+                    update_available=update_available,
+                    can_toggle=True,
+                    enabled=enabled,
                 )
             )
         return entries

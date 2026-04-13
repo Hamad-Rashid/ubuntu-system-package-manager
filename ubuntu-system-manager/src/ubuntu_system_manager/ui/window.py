@@ -17,6 +17,10 @@ from ubuntu_system_manager.models import (
     SystemMetrics,
 )
 from ubuntu_system_manager.services.bluetooth_service import BluetoothService
+from ubuntu_system_manager.services.package_action_service import (
+    PackageActionResult,
+    PackageActionService,
+)
 from ubuntu_system_manager.services.package_service import PackageService
 from ubuntu_system_manager.services.partition_service import PartitionService
 from ubuntu_system_manager.services.system_info import SystemInfoService
@@ -25,16 +29,19 @@ from ubuntu_system_manager.services.system_info import SystemInfoService
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application) -> None:
         super().__init__(application=app)
-        self.set_title("Ubuntu System Manager - Phase 1")
+        self.set_title("Ubuntu System Manager - Phase 2")
         self.set_default_size(1300, 860)
 
         self._system_service = SystemInfoService()
         self._package_service = PackageService()
+        self._package_action_service = PackageActionService()
         self._bluetooth_service = BluetoothService()
         self._partition_service = PartitionService()
 
-        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="phase1-refresh")
+        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="phase2-worker")
         self._refresh_inflight = False
+        self._operation_inflight = False
+        self._package_log_lines: list[str] = []
 
         self._build_ui()
         self._start_refresh(reason="startup")
@@ -92,8 +99,10 @@ class MainWindow(Adw.ApplicationWindow):
         (
             pkg_frame,
             self.package_summary_label,
-            self.package_all_view,
-            self.package_updates_view,
+            self.package_notebook,
+            self.package_all_listbox,
+            self.package_updates_listbox,
+            self.package_log_view,
         ) = self._build_package_section()
         split_vertical.set_start_child(pkg_frame)
 
@@ -109,6 +118,8 @@ class MainWindow(Adw.ApplicationWindow):
             "Partition Health"
         )
         lower_split.set_end_child(partition_frame)
+
+        self._update_controls_state()
 
     def _build_text_section(self, title: str) -> tuple[Gtk.Frame, Gtk.Label, Gtk.TextView]:
         frame = Gtk.Frame(label=title)
@@ -135,9 +146,11 @@ class MainWindow(Adw.ApplicationWindow):
         scroller.set_child(text)
         return frame, summary, text
 
-    def _build_package_section(self) -> tuple[Gtk.Frame, Gtk.Label, Gtk.TextView, Gtk.TextView]:
+    def _build_package_section(
+        self,
+    ) -> tuple[Gtk.Frame, Gtk.Label, Gtk.Notebook, Gtk.ListBox, Gtk.ListBox, Gtk.TextView]:
         frame = Gtk.Frame(label="Packages")
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.set_margin_top(10)
         box.set_margin_bottom(10)
         box.set_margin_start(10)
@@ -152,29 +165,37 @@ class MainWindow(Adw.ApplicationWindow):
         notebook.set_vexpand(True)
         box.append(notebook)
 
+        all_listbox = Gtk.ListBox()
+        all_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
         all_scroller = Gtk.ScrolledWindow()
         all_scroller.set_hexpand(True)
         all_scroller.set_vexpand(True)
-        all_text = Gtk.TextView()
-        all_text.set_editable(False)
-        all_text.set_cursor_visible(False)
-        all_text.set_monospace(True)
-        all_text.set_wrap_mode(Gtk.WrapMode.NONE)
-        all_scroller.set_child(all_text)
+        all_scroller.set_child(all_listbox)
         notebook.append_page(all_scroller, Gtk.Label(label="All Installed"))
 
+        updates_listbox = Gtk.ListBox()
+        updates_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
         updates_scroller = Gtk.ScrolledWindow()
         updates_scroller.set_hexpand(True)
         updates_scroller.set_vexpand(True)
-        updates_text = Gtk.TextView()
-        updates_text.set_editable(False)
-        updates_text.set_cursor_visible(False)
-        updates_text.set_monospace(True)
-        updates_text.set_wrap_mode(Gtk.WrapMode.NONE)
-        updates_scroller.set_child(updates_text)
+        updates_scroller.set_child(updates_listbox)
         notebook.append_page(updates_scroller, Gtk.Label(label="Updates Available"))
 
-        return frame, summary, all_text, updates_text
+        log_title = Gtk.Label(label="Package Action Log", xalign=0)
+        box.append(log_title)
+
+        log_scroller = Gtk.ScrolledWindow()
+        log_scroller.set_min_content_height(120)
+        box.append(log_scroller)
+
+        log_view = Gtk.TextView()
+        log_view.set_editable(False)
+        log_view.set_cursor_visible(False)
+        log_view.set_monospace(True)
+        log_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        log_scroller.set_child(log_view)
+
+        return frame, summary, notebook, all_listbox, updates_listbox, log_view
 
     def _on_manual_refresh_clicked(self, _button: Gtk.Button) -> None:
         self._start_refresh(reason="manual")
@@ -187,8 +208,8 @@ class MainWindow(Adw.ApplicationWindow):
         if self._refresh_inflight:
             return
         self._refresh_inflight = True
-        self.refresh_button.set_sensitive(False)
         self.status_label.set_text(f"Refreshing data ({reason})...")
+        self._update_controls_state()
 
         future = self._executor.submit(self._collect_snapshot)
         future.add_done_callback(lambda fut: GLib.idle_add(self._apply_snapshot, fut))
@@ -236,7 +257,7 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception as exc:  # noqa: BLE001
             self.status_label.set_text(f"Refresh failed: {exc}")
             self._refresh_inflight = False
-            self.refresh_button.set_sensitive(True)
+            self._update_controls_state()
             return False
 
         metrics = snapshot.get("metrics")
@@ -258,18 +279,19 @@ class MainWindow(Adw.ApplicationWindow):
             self.total_storage_label.set_text("N/A")
             self.used_storage_label.set_text("N/A")
 
-        updatable_count = len([item for item in packages if item.status == "Update available"])
-        updatable_packages = [item for item in packages if item.status == "Update available"]
+        updatable_packages = [item for item in packages if item.update_available]
         self.package_summary_label.set_text(
-            f"Installed packages: {len(packages)} | Updates available: {updatable_count}"
+            f"Installed packages: {len(packages)} | Updates available: {len(updatable_packages)}"
         )
-        self._set_textview_content(
-            self.package_all_view,
-            self._render_package_lines(packages, empty_message="No packages found or package tools unavailable."),
+        self._rebuild_package_list(
+            self.package_all_listbox,
+            packages,
+            empty_message="No packages found or package tools unavailable.",
         )
-        self._set_textview_content(
-            self.package_updates_view,
-            self._render_package_lines(updatable_packages, empty_message="No updates available."),
+        self._rebuild_package_list(
+            self.package_updates_listbox,
+            updatable_packages,
+            empty_message="No updates available.",
         )
 
         bt_count = len([device for device in bluetooth_devices if device.connected])
@@ -291,29 +313,222 @@ class MainWindow(Adw.ApplicationWindow):
         self.status_label.set_text(status_text)
 
         self._refresh_inflight = False
-        self.refresh_button.set_sensitive(True)
+        self._update_controls_state()
         return False
+
+    def _rebuild_package_list(self, listbox: Gtk.ListBox, items: list[PackageEntry], *, empty_message: str) -> None:
+        self._clear_listbox(listbox)
+
+        if not items:
+            empty_row = Gtk.ListBoxRow()
+            label = Gtk.Label(label=empty_message, xalign=0)
+            label.set_margin_top(8)
+            label.set_margin_bottom(8)
+            label.set_margin_start(8)
+            label.set_margin_end(8)
+            empty_row.set_child(label)
+            listbox.append(empty_row)
+            return
+
+        for package in items:
+            listbox.append(self._build_package_row(package))
+
+    def _clear_listbox(self, listbox: Gtk.ListBox) -> None:
+        child = listbox.get_first_child()
+        while child is not None:
+            next_child = child.get_next_sibling()
+            listbox.remove(child)
+            child = next_child
+
+    def _build_package_row(self, package: PackageEntry) -> Gtk.ListBoxRow:
+        row = Gtk.ListBoxRow()
+        row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        row_box.set_margin_top(6)
+        row_box.set_margin_bottom(6)
+        row_box.set_margin_start(8)
+        row_box.set_margin_end(8)
+        row.set_child(row_box)
+
+        details_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        details_box.set_hexpand(True)
+        row_box.append(details_box)
+
+        title = Gtk.Label(
+            label=f"{package.name} [{package.source}]",
+            xalign=0,
+        )
+        details_box.append(title)
+
+        meta = Gtk.Label(
+            label=(
+                f"Installed: {package.installed_version} | "
+                f"Latest: {package.latest_version} | "
+                f"Status: {package.status}"
+            ),
+            xalign=0,
+        )
+        meta.add_css_class("dim-label")
+        meta.set_wrap(True)
+        details_box.append(meta)
+
+        action_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        row_box.append(action_box)
+
+        update_btn = Gtk.Button(label="Update")
+        update_btn.set_sensitive(package.update_available)
+        if not package.update_available:
+            update_btn.set_tooltip_text("No update available.")
+        update_btn.connect("clicked", self._on_package_update_clicked, package)
+        action_box.append(update_btn)
+
+        remove_btn = Gtk.Button(label="Remove")
+        remove_btn.connect("clicked", self._on_package_remove_clicked, package)
+        action_box.append(remove_btn)
+
+        toggle_label = "Disable" if package.enabled else "Enable"
+        toggle_btn = Gtk.Button(label=toggle_label)
+        toggle_btn.set_sensitive(package.can_toggle)
+        if not package.can_toggle:
+            toggle_btn.set_tooltip_text("Enable/Disable is only supported for snap packages.")
+        toggle_btn.connect("clicked", self._on_package_toggle_clicked, package)
+        action_box.append(toggle_btn)
+
+        return row
+
+    def _on_package_update_clicked(self, _button: Gtk.Button, package: PackageEntry) -> None:
+        if not package.update_available:
+            return
+        self._run_package_action("update", package)
+
+    def _on_package_remove_clicked(self, _button: Gtk.Button, package: PackageEntry) -> None:
+        heading = f"Remove package '{package.name}'?"
+        body = f"This will remove the {package.source} package '{package.name}'."
+        self._confirm_package_action(
+            heading=heading,
+            body=body,
+            confirm_label="Remove",
+            destructive=True,
+            action="remove",
+            package=package,
+        )
+
+    def _on_package_toggle_clicked(self, _button: Gtk.Button, package: PackageEntry) -> None:
+        if not package.can_toggle:
+            return
+
+        action_name = "Disable" if package.enabled else "Enable"
+        heading = f"{action_name} package '{package.name}'?"
+        body = f"This will {action_name.lower()} the snap package '{package.name}'."
+        self._confirm_package_action(
+            heading=heading,
+            body=body,
+            confirm_label=action_name,
+            destructive=False,
+            action="toggle",
+            package=package,
+        )
+
+    def _confirm_package_action(
+        self,
+        *,
+        heading: str,
+        body: str,
+        confirm_label: str,
+        destructive: bool,
+        action: str,
+        package: PackageEntry,
+    ) -> None:
+        dialog = Adw.MessageDialog.new(self, heading, body)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("confirm", confirm_label)
+        if destructive:
+            dialog.set_response_appearance("confirm", Adw.ResponseAppearance.DESTRUCTIVE)
+        else:
+            dialog.set_response_appearance("confirm", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def _on_response(_dlg: Adw.MessageDialog, response: str) -> None:
+            if response == "confirm":
+                self._run_package_action(action, package)
+            dialog.close()
+
+        dialog.connect("response", _on_response)
+        dialog.present()
+
+    def _run_package_action(self, action: str, package: PackageEntry) -> None:
+        if self._operation_inflight:
+            self.status_label.set_text("Another package operation is already running.")
+            return
+
+        self._operation_inflight = True
+        self._update_controls_state()
+        self._append_package_log(f"Running action: {action} {package.name} ({package.source})")
+        self.status_label.set_text(f"Running {action} on {package.name}...")
+
+        future = self._executor.submit(self._execute_package_action, action, package)
+        future.add_done_callback(
+            lambda fut, act=action, pkg_name=package.name: GLib.idle_add(
+                self._on_package_action_done, fut, act, pkg_name
+            )
+        )
+
+    def _execute_package_action(self, action: str, package: PackageEntry) -> PackageActionResult:
+        if action == "update":
+            return self._package_action_service.update_package(name=package.name, source=package.source)
+        if action == "remove":
+            return self._package_action_service.remove_package(name=package.name, source=package.source)
+        if action == "toggle":
+            return self._package_action_service.toggle_package(
+                name=package.name,
+                source=package.source,
+                enabled=package.enabled,
+            )
+        return PackageActionResult(False, 1, f"Unsupported action: {action}", "", "")
+
+    def _on_package_action_done(self, future: Future[PackageActionResult], action: str, pkg_name: str) -> bool:
+        try:
+            result = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self._append_package_log(f"Action failed unexpectedly: {action} {pkg_name} | {exc}")
+            self.status_label.set_text(f"Operation failed: {exc}")
+            self._operation_inflight = False
+            self._update_controls_state()
+            return False
+
+        if result.ok:
+            self._append_package_log(f"SUCCESS: {result.message}")
+            self.status_label.set_text(f"Success: {result.message}")
+        else:
+            self._append_package_log(f"FAILED: {result.message} (exit {result.code})")
+            self.status_label.set_text(f"Failed: {result.message}")
+
+        if result.stdout:
+            self._append_package_log(f"stdout: {result.stdout[-1200:]}")
+        if result.stderr:
+            self._append_package_log(f"stderr: {result.stderr[-1200:]}")
+
+        self._operation_inflight = False
+        self._update_controls_state()
+        self._start_refresh(reason="post-action")
+        return False
+
+    def _append_package_log(self, message: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self._package_log_lines.append(f"[{timestamp}] {message}")
+        if len(self._package_log_lines) > 250:
+            self._package_log_lines = self._package_log_lines[-250:]
+        self._set_textview_content(self.package_log_view, "\n".join(self._package_log_lines))
+
+    def _update_controls_state(self) -> None:
+        refresh_sensitive = not self._refresh_inflight and not self._operation_inflight
+        self.refresh_button.set_sensitive(refresh_sensitive)
+        package_panel_sensitive = not self._refresh_inflight and not self._operation_inflight
+        self.package_notebook.set_sensitive(package_panel_sensitive)
 
     def _set_textview_content(self, text_view: Gtk.TextView, content: str) -> None:
         buffer = text_view.get_buffer()
         buffer.set_text(content)
-
-    def _render_package_lines(self, items: list[PackageEntry], *, empty_message: str) -> str:
-        header = f"{'Name':<42} {'Src':<6} {'Installed':<20} {'Latest':<20} Status"
-        lines = [header, "-" * len(header)]
-        if not items:
-            lines.append(empty_message)
-            return "\n".join(lines)
-
-        for item in items:
-            lines.append(
-                f"{item.name[:41]:<42} "
-                f"{item.source:<6} "
-                f"{item.installed_version[:19]:<20} "
-                f"{item.latest_version[:19]:<20} "
-                f"{item.status}"
-            )
-        return "\n".join(lines)
 
     def _render_bluetooth_lines(self, devices: list[BluetoothDeviceEntry], adapter_status: str) -> str:
         header = f"{'Name':<34} {'Address':<20} {'Connected':<10} Battery"

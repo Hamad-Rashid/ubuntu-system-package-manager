@@ -20,6 +20,9 @@ class PackageEntry:
     installed_version: str
     latest_version: str
     status: str
+    update_available: bool
+    can_toggle: bool
+    enabled: bool
 
 
 @dataclass(slots=True)
