@@ -42,18 +42,21 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _build_ui(self) -> None:
         header = Adw.HeaderBar()
-        self.set_titlebar(header)
 
         self.refresh_button = Gtk.Button(label="Refresh")
         self.refresh_button.connect("clicked", self._on_manual_refresh_clicked)
         header.pack_end(self.refresh_button)
+
+        toolbar_view = Adw.ToolbarView()
+        toolbar_view.add_top_bar(header)
+        self.set_content(toolbar_view)
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         root.set_margin_top(12)
         root.set_margin_bottom(12)
         root.set_margin_start(12)
         root.set_margin_end(12)
-        self.set_content(root)
+        toolbar_view.set_content(root)
 
         self.status_label = Gtk.Label(label="Waiting for first refresh...", xalign=0)
         root.append(self.status_label)
@@ -149,6 +152,7 @@ class MainWindow(Adw.ApplicationWindow):
             "metrics": None,
             "packages": [],
             "bluetooth_devices": [],
+            "bluetooth_status": "Bluetooth adapter status unavailable.",
             "partitions": [],
             "errors": [],
             "collected_at": datetime.now(),
@@ -162,6 +166,11 @@ class MainWindow(Adw.ApplicationWindow):
             snapshot["packages"] = self._package_service.collect()
         except Exception as exc:  # noqa: BLE001
             snapshot["errors"].append(f"packages: {exc}")
+
+        try:
+            snapshot["bluetooth_status"] = self._bluetooth_service.adapter_status()
+        except Exception as exc:  # noqa: BLE001
+            snapshot["errors"].append(f"bluetooth status: {exc}")
 
         try:
             snapshot["bluetooth_devices"] = self._bluetooth_service.collect()
@@ -187,6 +196,7 @@ class MainWindow(Adw.ApplicationWindow):
         metrics = snapshot.get("metrics")
         packages: list[PackageEntry] = snapshot.get("packages", [])
         bluetooth_devices: list[BluetoothDeviceEntry] = snapshot.get("bluetooth_devices", [])
+        bluetooth_status: str = snapshot.get("bluetooth_status", "Bluetooth adapter status unavailable.")
         partitions: list[PartitionEntry] = snapshot.get("partitions", [])
         errors: list[str] = snapshot.get("errors", [])
         collected_at: datetime = snapshot.get("collected_at", datetime.now())
@@ -209,8 +219,11 @@ class MainWindow(Adw.ApplicationWindow):
         self._set_textview_content(self.package_view, self._render_package_lines(packages))
 
         bt_count = len([device for device in bluetooth_devices if device.connected])
-        self.bluetooth_summary_label.set_text(f"Connected Bluetooth devices: {bt_count}")
-        self._set_textview_content(self.bluetooth_view, self._render_bluetooth_lines(bluetooth_devices))
+        self.bluetooth_summary_label.set_text(f"{bluetooth_status} | Connected devices: {bt_count}")
+        self._set_textview_content(
+            self.bluetooth_view,
+            self._render_bluetooth_lines(bluetooth_devices, bluetooth_status),
+        )
 
         mount_error_count = len([entry for entry in partitions if entry.status.startswith("Mount error")])
         self.partition_summary_label.set_text(
@@ -248,11 +261,14 @@ class MainWindow(Adw.ApplicationWindow):
             )
         return "\n".join(lines)
 
-    def _render_bluetooth_lines(self, devices: list[BluetoothDeviceEntry]) -> str:
+    def _render_bluetooth_lines(self, devices: list[BluetoothDeviceEntry], adapter_status: str) -> str:
         header = f"{'Name':<34} {'Address':<20} {'Connected':<10} Battery"
         lines = [header, "-" * len(header)]
         if not devices:
             lines.append("No connected Bluetooth devices detected.")
+            lines.append(f"Adapter status: {adapter_status}")
+            lines.append("Tip: USB receiver (2.4GHz dongle) devices are not Bluetooth.")
+            lines.append("To connect Bluetooth devices, pair/connect from Ubuntu Settings > Bluetooth.")
             return "\n".join(lines)
 
         for device in devices:

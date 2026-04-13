@@ -7,9 +7,36 @@ from ubuntu_system_manager.models import BluetoothDeviceEntry
 from .command_runner import run_command
 
 BATTERY_RE = re.compile(r"Battery Percentage:\s*(?:0x[0-9a-fA-F]+\s*)?\(?(\d+)\)?")
+POWERED_RE = re.compile(r"^\s*Powered:\s*(yes|no)\s*$", re.IGNORECASE)
 
 
 class BluetoothService:
+    def adapter_status(self) -> str:
+        list_result = run_command(["bluetoothctl", "list"], timeout=10)
+        if not list_result.ok:
+            return "Bluetooth adapter status unavailable."
+
+        controllers = [line for line in list_result.stdout.splitlines() if line.strip().startswith("Controller ")]
+        if not controllers:
+            return "No Bluetooth adapter detected."
+
+        show_result = run_command(["bluetoothctl", "show"], timeout=10)
+        if not show_result.ok:
+            return f"Bluetooth adapter detected ({len(controllers)}), state unknown."
+
+        if "No default controller available" in show_result.stdout:
+            return "Bluetooth adapter detected, but no default controller is active."
+
+        for line in show_result.stdout.splitlines():
+            match = POWERED_RE.match(line)
+            if not match:
+                continue
+            if match.group(1).lower() == "yes":
+                return f"Bluetooth adapter powered on ({len(controllers)} adapter(s))."
+            return f"Bluetooth adapter detected but powered off ({len(controllers)} adapter(s))."
+
+        return f"Bluetooth adapter detected ({len(controllers)} adapter(s))."
+
     def collect(self) -> list[BluetoothDeviceEntry]:
         devices_result = run_command(["bluetoothctl", "devices", "Connected"], timeout=10)
         if not devices_result.ok:
