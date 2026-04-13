@@ -8,6 +8,7 @@ from .command_runner import run_command
 
 BATTERY_RE = re.compile(r"Battery Percentage:\s*(?:0x[0-9a-fA-F]+\s*)?\(?(\d+)\)?")
 POWERED_RE = re.compile(r"^\s*Powered:\s*(yes|no)\s*$", re.IGNORECASE)
+LSUSB_RE = re.compile(r"^Bus\s+(\d+)\s+Device\s+(\d+):\s+ID\s+([0-9a-fA-F]{4}:[0-9a-fA-F]{4})\s+(.+)$")
 
 
 class BluetoothService:
@@ -39,26 +40,27 @@ class BluetoothService:
 
     def collect(self) -> list[BluetoothDeviceEntry]:
         devices_result = run_command(["bluetoothctl", "devices", "Connected"], timeout=10)
-        if not devices_result.ok:
-            return []
-
         entries: list[BluetoothDeviceEntry] = []
-        for line in devices_result.stdout.splitlines():
-            parts = line.split(maxsplit=2)
-            if len(parts) < 3 or parts[0] != "Device":
-                continue
+        if devices_result.ok:
+            for line in devices_result.stdout.splitlines():
+                parts = line.split(maxsplit=2)
+                if len(parts) < 3 or parts[0] != "Device":
+                    continue
 
-            address = parts[1]
-            name = parts[2]
-            battery_percent = self._read_device_battery(address)
-            entries.append(
-                BluetoothDeviceEntry(
-                    address=address,
-                    name=name,
-                    connected=True,
-                    battery_percent=battery_percent,
+                address = parts[1]
+                name = parts[2]
+                battery_percent = self._read_device_battery(address)
+                entries.append(
+                    BluetoothDeviceEntry(
+                        address=address,
+                        name=name,
+                        connected=True,
+                        battery_percent=battery_percent,
+                    )
                 )
-            )
+
+        # Keep a single list in the Bluetooth panel by also surfacing USB wireless receivers here.
+        entries.extend(self._collect_usb_receiver_devices())
         return entries
 
     def _read_device_battery(self, address: str) -> str:
@@ -71,3 +73,34 @@ class BluetoothService:
             if match:
                 return f"{match.group(1)}%"
         return "N/A"
+
+    def _collect_usb_receiver_devices(self) -> list[BluetoothDeviceEntry]:
+        result = run_command(["lsusb"], timeout=10)
+        if not result.ok:
+            return []
+
+        entries: list[BluetoothDeviceEntry] = []
+        for line in result.stdout.splitlines():
+            match = LSUSB_RE.match(line.strip())
+            if not match:
+                continue
+
+            bus, device, usb_id, description = match.groups()
+            lower_desc = description.lower()
+
+            is_receiver = "receiver" in lower_desc and any(
+                token in lower_desc
+                for token in ("unifying", "bolt", "2.4g", "wireless", "keyboard", "mouse", "logitech")
+            )
+            if not is_receiver:
+                continue
+
+            entries.append(
+                BluetoothDeviceEntry(
+                    address=f"USB {bus}:{device} ({usb_id})",
+                    name=f"{description} [USB]",
+                    connected=True,
+                    battery_percent="N/A",
+                )
+            )
+        return entries

@@ -219,7 +219,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._set_textview_content(self.package_view, self._render_package_lines(packages))
 
         bt_count = len([device for device in bluetooth_devices if device.connected])
-        self.bluetooth_summary_label.set_text(f"{bluetooth_status} | Connected devices: {bt_count}")
+        self.bluetooth_summary_label.set_text(f"{bluetooth_status} | Connected Bluetooth/USB devices: {bt_count}")
         self._set_textview_content(
             self.bluetooth_view,
             self._render_bluetooth_lines(bluetooth_devices, bluetooth_status),
@@ -265,9 +265,8 @@ class MainWindow(Adw.ApplicationWindow):
         header = f"{'Name':<34} {'Address':<20} {'Connected':<10} Battery"
         lines = [header, "-" * len(header)]
         if not devices:
-            lines.append("No connected Bluetooth devices detected.")
+            lines.append("No connected Bluetooth/USB receiver devices detected.")
             lines.append(f"Adapter status: {adapter_status}")
-            lines.append("Tip: USB receiver (2.4GHz dongle) devices are not Bluetooth.")
             lines.append("To connect Bluetooth devices, pair/connect from Ubuntu Settings > Bluetooth.")
             return "\n".join(lines)
 
