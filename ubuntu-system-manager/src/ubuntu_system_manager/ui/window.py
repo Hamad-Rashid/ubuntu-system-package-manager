@@ -89,7 +89,12 @@ class MainWindow(Adw.ApplicationWindow):
         split_vertical.set_vexpand(True)
         root.append(split_vertical)
 
-        pkg_frame, self.package_summary_label, self.package_view = self._build_text_section("Packages")
+        (
+            pkg_frame,
+            self.package_summary_label,
+            self.package_all_view,
+            self.package_updates_view,
+        ) = self._build_package_section()
         split_vertical.set_start_child(pkg_frame)
 
         lower_split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
@@ -129,6 +134,47 @@ class MainWindow(Adw.ApplicationWindow):
         text.set_wrap_mode(Gtk.WrapMode.NONE)
         scroller.set_child(text)
         return frame, summary, text
+
+    def _build_package_section(self) -> tuple[Gtk.Frame, Gtk.Label, Gtk.TextView, Gtk.TextView]:
+        frame = Gtk.Frame(label="Packages")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.set_margin_top(10)
+        box.set_margin_bottom(10)
+        box.set_margin_start(10)
+        box.set_margin_end(10)
+        frame.set_child(box)
+
+        summary = Gtk.Label(label="-", xalign=0)
+        box.append(summary)
+
+        notebook = Gtk.Notebook()
+        notebook.set_hexpand(True)
+        notebook.set_vexpand(True)
+        box.append(notebook)
+
+        all_scroller = Gtk.ScrolledWindow()
+        all_scroller.set_hexpand(True)
+        all_scroller.set_vexpand(True)
+        all_text = Gtk.TextView()
+        all_text.set_editable(False)
+        all_text.set_cursor_visible(False)
+        all_text.set_monospace(True)
+        all_text.set_wrap_mode(Gtk.WrapMode.NONE)
+        all_scroller.set_child(all_text)
+        notebook.append_page(all_scroller, Gtk.Label(label="All Installed"))
+
+        updates_scroller = Gtk.ScrolledWindow()
+        updates_scroller.set_hexpand(True)
+        updates_scroller.set_vexpand(True)
+        updates_text = Gtk.TextView()
+        updates_text.set_editable(False)
+        updates_text.set_cursor_visible(False)
+        updates_text.set_monospace(True)
+        updates_text.set_wrap_mode(Gtk.WrapMode.NONE)
+        updates_scroller.set_child(updates_text)
+        notebook.append_page(updates_scroller, Gtk.Label(label="Updates Available"))
+
+        return frame, summary, all_text, updates_text
 
     def _on_manual_refresh_clicked(self, _button: Gtk.Button) -> None:
         self._start_refresh(reason="manual")
@@ -213,10 +259,18 @@ class MainWindow(Adw.ApplicationWindow):
             self.used_storage_label.set_text("N/A")
 
         updatable_count = len([item for item in packages if item.status == "Update available"])
+        updatable_packages = [item for item in packages if item.status == "Update available"]
         self.package_summary_label.set_text(
             f"Installed packages: {len(packages)} | Updates available: {updatable_count}"
         )
-        self._set_textview_content(self.package_view, self._render_package_lines(packages))
+        self._set_textview_content(
+            self.package_all_view,
+            self._render_package_lines(packages, empty_message="No packages found or package tools unavailable."),
+        )
+        self._set_textview_content(
+            self.package_updates_view,
+            self._render_package_lines(updatable_packages, empty_message="No updates available."),
+        )
 
         bt_count = len([device for device in bluetooth_devices if device.connected])
         self.bluetooth_summary_label.set_text(f"{bluetooth_status} | Connected Bluetooth/USB devices: {bt_count}")
@@ -244,11 +298,11 @@ class MainWindow(Adw.ApplicationWindow):
         buffer = text_view.get_buffer()
         buffer.set_text(content)
 
-    def _render_package_lines(self, items: list[PackageEntry]) -> str:
+    def _render_package_lines(self, items: list[PackageEntry], *, empty_message: str) -> str:
         header = f"{'Name':<42} {'Src':<6} {'Installed':<20} {'Latest':<20} Status"
         lines = [header, "-" * len(header)]
         if not items:
-            lines.append("No packages found or package tools unavailable.")
+            lines.append(empty_message)
             return "\n".join(lines)
 
         for item in items:
