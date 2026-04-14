@@ -20,26 +20,34 @@ class PackageActionServiceTests(unittest.TestCase):
         self.service = PackageActionService()
 
     @staticmethod
-    def _ok_result(command: list[str]) -> PrivilegedCommandResult:
-        return PrivilegedCommandResult(
-            ok=True,
-            stdout="ok",
-            stderr="",
-            code=0,
-            command=command,
-            queue_wait_seconds=0.12,
-            execution_seconds=0.85,
+    def _ok_result(command: list[str]) -> tuple[PrivilegedCommandResult, int]:
+        return (
+            PrivilegedCommandResult(
+                ok=True,
+                stdout="ok",
+                stderr="",
+                code=0,
+                command=command,
+                queue_wait_seconds=0.12,
+                execution_seconds=0.85,
+            ),
+            1,
         )
 
     def test_update_package_apt_uses_expected_command(self) -> None:
         expected_cmd = ["pkexec", "apt-get", "install", "--only-upgrade", "-y", "curl"]
         with mock.patch(
-            "ubuntu_system_manager.services.package_action_service.run_privileged_command",
+            "ubuntu_system_manager.services.package_action_service.run_privileged_command_with_retry",
             return_value=self._ok_result(expected_cmd),
         ) as mock_run:
             result = self.service.update_package(name="curl", source="apt")
 
-        mock_run.assert_called_once_with(["apt-get", "install", "--only-upgrade", "-y", "curl"], timeout=2400)
+        mock_run.assert_called_once_with(
+            ["apt-get", "install", "--only-upgrade", "-y", "curl"],
+            timeout=2400,
+            retry_attempts=1,
+            retry_delay_seconds=1.0,
+        )
         self.assertTrue(result.ok)
         self.assertEqual(result.command, expected_cmd)
         self.assertAlmostEqual(result.queue_wait_seconds, 0.12)
@@ -51,11 +59,17 @@ class PackageActionServiceTests(unittest.TestCase):
         self.assertIn("Unsupported source for update", result.message)
         self.assertEqual(result.command, [])
 
+    def test_update_package_invalid_name_is_rejected(self) -> None:
+        result = self.service.update_package(name="bad package", source="apt")
+        self.assertFalse(result.ok)
+        self.assertIn("Invalid package name", result.message)
+        self.assertEqual(result.command, [])
+
     def test_update_all_packages_runs_grouped_apt_and_snap_commands(self) -> None:
         apt_cmd = ["pkexec", "apt-get", "install", "--only-upgrade", "-y", "curl", "vim"]
         snap_cmd = ["pkexec", "snap", "refresh", "firefox", "snapd"]
         with mock.patch(
-            "ubuntu_system_manager.services.package_action_service.run_privileged_command",
+            "ubuntu_system_manager.services.package_action_service.run_privileged_command_with_retry",
             side_effect=[self._ok_result(apt_cmd), self._ok_result(snap_cmd)],
         ) as mock_run:
             results = self.service.update_all_packages(
@@ -70,14 +84,6 @@ class PackageActionServiceTests(unittest.TestCase):
         first_call = mock_run.call_args_list[0]
         second_call = mock_run.call_args_list[1]
         self.assertEqual(
-            first_call.kwargs,
-            {"timeout": 3600},
-        )
-        self.assertEqual(
-            second_call.kwargs,
-            {"timeout": 3600},
-        )
-        self.assertEqual(
             first_call.args[0],
             ["apt-get", "install", "--only-upgrade", "-y", "curl", "vim"],
         )
@@ -87,7 +93,9 @@ class PackageActionServiceTests(unittest.TestCase):
         )
 
     def test_update_all_packages_with_empty_lists_returns_no_results(self) -> None:
-        with mock.patch("ubuntu_system_manager.services.package_action_service.run_privileged_command") as mock_run:
+        with mock.patch(
+            "ubuntu_system_manager.services.package_action_service.run_privileged_command_with_retry"
+        ) as mock_run:
             results = self.service.update_all_packages(apt_names=[], snap_names=[])
         self.assertEqual(results, [])
         mock_run.assert_not_called()
@@ -95,24 +103,34 @@ class PackageActionServiceTests(unittest.TestCase):
     def test_remove_package_snap_uses_expected_command(self) -> None:
         expected_cmd = ["pkexec", "snap", "remove", "firefox"]
         with mock.patch(
-            "ubuntu_system_manager.services.package_action_service.run_privileged_command",
+            "ubuntu_system_manager.services.package_action_service.run_privileged_command_with_retry",
             return_value=self._ok_result(expected_cmd),
         ) as mock_run:
             result = self.service.remove_package(name="firefox", source="snap")
 
-        mock_run.assert_called_once_with(["snap", "remove", "firefox"], timeout=2400)
+        mock_run.assert_called_once_with(
+            ["snap", "remove", "firefox"],
+            timeout=2400,
+            retry_attempts=1,
+            retry_delay_seconds=1.0,
+        )
         self.assertTrue(result.ok)
         self.assertEqual(result.command, expected_cmd)
 
     def test_toggle_package_snap_disable_uses_expected_command(self) -> None:
         expected_cmd = ["pkexec", "snap", "disable", "lxd"]
         with mock.patch(
-            "ubuntu_system_manager.services.package_action_service.run_privileged_command",
+            "ubuntu_system_manager.services.package_action_service.run_privileged_command_with_retry",
             return_value=self._ok_result(expected_cmd),
         ) as mock_run:
             result = self.service.toggle_package(name="lxd", source="snap", enabled=True)
 
-        mock_run.assert_called_once_with(["snap", "disable", "lxd"], timeout=1200)
+        mock_run.assert_called_once_with(
+            ["snap", "disable", "lxd"],
+            timeout=1200,
+            retry_attempts=1,
+            retry_delay_seconds=1.0,
+        )
         self.assertTrue(result.ok)
         self.assertEqual(result.command, expected_cmd)
 

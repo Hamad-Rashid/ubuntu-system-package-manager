@@ -15,11 +15,25 @@ if str(SRC_DIR) not in sys.path:
 
 from ubuntu_system_manager.services.command_runner import (  # noqa: E402
     CommandResult,
+    PrivilegedCommandResult,
+    run_privileged_command_with_retry,
     run_privileged_command,
 )
 
 
 class CommandRunnerTests(unittest.TestCase):
+    @staticmethod
+    def _priv_result(*, ok: bool, stderr: str = "", stdout: str = "", code: int = 0) -> PrivilegedCommandResult:
+        return PrivilegedCommandResult(
+            ok=ok,
+            stdout=stdout,
+            stderr=stderr,
+            code=code,
+            command=["pkexec", "echo", "x"],
+            queue_wait_seconds=0.0,
+            execution_seconds=0.0,
+        )
+
     def test_run_privileged_command_adds_pkexec_prefix(self) -> None:
         with mock.patch(
             "ubuntu_system_manager.services.command_runner.run_command",
@@ -66,6 +80,40 @@ class CommandRunnerTests(unittest.TestCase):
         self.assertGreater(queue_waits[1], 0.05)
         self.assertGreater(results[0].execution_seconds, 0.0)
         self.assertGreater(results[1].execution_seconds, 0.0)
+
+    def test_run_privileged_command_with_retry_retries_retryable_failure(self) -> None:
+        with mock.patch(
+            "ubuntu_system_manager.services.command_runner.run_privileged_command",
+            side_effect=[
+                self._priv_result(ok=False, stderr="Could not get lock /var/lib/dpkg/lock-frontend", code=100),
+                self._priv_result(ok=True, stdout="ok", code=0),
+            ],
+        ) as mock_run, mock.patch("ubuntu_system_manager.services.command_runner.time.sleep") as mock_sleep:
+            result, attempts = run_privileged_command_with_retry(
+                ["apt-get", "install", "-y", "vim"],
+                timeout=60,
+                retry_attempts=1,
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(attempts, 2)
+        self.assertEqual(mock_run.call_count, 2)
+        mock_sleep.assert_called_once()
+
+    def test_run_privileged_command_with_retry_does_not_retry_non_retryable_failure(self) -> None:
+        with mock.patch(
+            "ubuntu_system_manager.services.command_runner.run_privileged_command",
+            return_value=self._priv_result(ok=False, stderr="package not found", code=100),
+        ) as mock_run:
+            result, attempts = run_privileged_command_with_retry(
+                ["apt-get", "install", "-y", "missing-package"],
+                timeout=60,
+                retry_attempts=2,
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(attempts, 1)
+        mock_run.assert_called_once()
 
 
 if __name__ == "__main__":

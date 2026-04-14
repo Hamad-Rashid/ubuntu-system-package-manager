@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import count
@@ -30,6 +31,15 @@ _privileged_lock = threading.Lock()
 _queue_state_lock = threading.Lock()
 _queue_order = count(1)
 _queued_ticket_ids: list[int] = []
+RETRYABLE_ERROR_TOKENS = (
+    "could not get lock",
+    "unable to acquire the dpkg frontend lock",
+    "is another process using it",
+    "resource temporarily unavailable",
+    "temporary failure",
+    "another change is in progress",
+    "snapd is not ready yet",
+)
 
 
 def run_command(args: list[str], timeout: int = 20) -> CommandResult:
@@ -49,6 +59,13 @@ def run_command(args: list[str], timeout: int = 20) -> CommandResult:
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return CommandResult(ok=False, stdout="", stderr=str(exc), code=1)
+
+
+def is_retryable_failure(stderr: str, stdout: str = "") -> bool:
+    text = f"{stderr}\n{stdout}".strip().lower()
+    if not text:
+        return False
+    return any(token in text for token in RETRYABLE_ERROR_TOKENS)
 
 
 def run_privileged_command(args: list[str], timeout: int = 20) -> PrivilegedCommandResult:
@@ -90,3 +107,23 @@ def run_privileged_command(args: list[str], timeout: int = 20) -> PrivilegedComm
         queue_wait_seconds=queue_wait_seconds,
         execution_seconds=execution_seconds,
     )
+
+
+def run_privileged_command_with_retry(
+    args: list[str],
+    *,
+    timeout: int = 20,
+    retry_attempts: int = 1,
+    retry_delay_seconds: float = 1.0,
+) -> tuple[PrivilegedCommandResult, int]:
+    attempts = 0
+    while True:
+        attempts += 1
+        result = run_privileged_command(args, timeout=timeout)
+        if result.ok:
+            return result, attempts
+        if attempts > retry_attempts:
+            return result, attempts
+        if not is_retryable_failure(result.stderr, result.stdout):
+            return result, attempts
+        time.sleep(max(retry_delay_seconds, 0.0))

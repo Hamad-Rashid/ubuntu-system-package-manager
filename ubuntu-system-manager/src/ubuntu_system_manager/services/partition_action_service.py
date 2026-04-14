@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import PurePosixPath
+import time
 
 from ubuntu_system_manager.models import PartitionEntry
 
-from .command_runner import run_command, run_privileged_command
+from .command_runner import run_command, run_privileged_command_with_retry
 
 EXT_FILESYSTEMS = {"ext2", "ext3", "ext4"}
 NTFS_FILESYSTEMS = {"ntfs", "ntfs3", "fuseblk"}
@@ -12,10 +14,25 @@ SPECIAL_MOUNTPOINT_PREFIX = "/media/hamad/other"
 SPECIAL_TARGET_CANONICAL = "/media/hamad/Other"
 SPECIAL_FALLBACK_DEVICE = "/dev/sda1"
 SYSTEM_MOUNTPOINTS = {"/", "/boot", "/boot/efi"}
+VERIFY_RETRY_ATTEMPTS = 3
+VERIFY_RETRY_DELAY_SECONDS = 0.5
 
 
 def _is_special_mountpoint(path: str) -> bool:
     return (path or "").strip().lower().startswith(SPECIAL_MOUNTPOINT_PREFIX)
+
+
+def _is_safe_mountpoint(path: str) -> bool:
+    mountpoint = (path or "").strip()
+    if not mountpoint:
+        return False
+    if not mountpoint.startswith("/"):
+        return False
+    try:
+        parts = PurePosixPath(mountpoint).parts
+    except Exception:  # noqa: BLE001
+        return False
+    return ".." not in parts
 
 
 @dataclass(slots=True)
@@ -38,10 +55,40 @@ class PartitionFixResult:
 
 
 class PartitionActionService:
+    def _last_failed_step_stderr(self, steps: list[PartitionFixStepResult]) -> str:
+        for step in reversed(steps):
+            if not step.ok and step.stderr:
+                return step.stderr
+        return ""
+
+    def _failure_hint(self, stderr: str) -> str:
+        text = (stderr or "").strip().lower()
+        if not text:
+            return ""
+        if "not authorized" in text or "authentication" in text:
+            return "Authentication was denied or canceled."
+        if "wrong fs type" in text:
+            return "Filesystem type mismatch detected. For NTFS, ensure ntfs-3g is installed."
+        if "ntfs-3g" in text and ("not found" in text or "no such file" in text):
+            return "ntfs-3g helper is missing. Install it with: sudo apt install ntfs-3g"
+        if "device or resource busy" in text or "is busy" in text:
+            return "The device is busy. Close apps using this disk and retry."
+        if "already mounted" in text:
+            return "The partition appears to already be mounted by another mountpoint."
+        if "no such file or directory" in text:
+            return "Mount target or device path is missing. Verify the partition path and mount directory."
+        return ""
+
+    def _mount_failure_message(self, *, device: str, steps: list[PartitionFixStepResult], fallback: str) -> str:
+        hint = self._failure_hint(self._last_failed_step_stderr(steps))
+        if hint:
+            return f"{fallback} Hint: {hint}"
+        return fallback
+
     def mount_partition(self, partition: PartitionEntry) -> PartitionFixResult:
         steps: list[PartitionFixStepResult] = []
         device = partition.device
-        filesystem = partition.filesystem.lower()
+        filesystem = (partition.filesystem or "").lower()
         mountpoint = partition.mountpoint if partition.mountpoint != "-" else ""
         expected_mountpoint = partition.expected_mountpoint if partition.expected_mountpoint != "-" else ""
 
@@ -51,6 +98,8 @@ class PartitionActionService:
             return PartitionFixResult(False, f"Partition {device} is already mounted.", steps)
         if expected_mountpoint in SYSTEM_MOUNTPOINTS:
             return PartitionFixResult(False, "Refusing to mount to a protected system mountpoint.", steps)
+        if expected_mountpoint and not _is_safe_mountpoint(expected_mountpoint):
+            return PartitionFixResult(False, f"Unsafe mountpoint path rejected: {expected_mountpoint}", steps)
 
         if expected_mountpoint:
             if _is_special_mountpoint(expected_mountpoint):
@@ -62,7 +111,15 @@ class PartitionActionService:
                 )
                 steps.extend(special_steps)
                 if not special_steps or not special_steps[-1].ok:
-                    return PartitionFixResult(False, f"Mount failed for {device}. Use Fix to repair.", steps)
+                    return PartitionFixResult(
+                        False,
+                        self._mount_failure_message(
+                            device=device,
+                            steps=steps,
+                            fallback=f"Mount failed for {device}. Use Fix to repair.",
+                        ),
+                        steps,
+                    )
 
                 verify_target_step = self._verify_target_mounted_step(special_target)
                 steps.append(verify_target_step)
@@ -81,10 +138,19 @@ class PartitionActionService:
                 step=f"Ensure mountpoint directory {expected_mountpoint}",
                 command=["mkdir", "-p", expected_mountpoint],
                 timeout=120,
+                retry_attempts=1,
             )
             steps.append(mkdir_step)
             if not mkdir_step.ok:
-                return PartitionFixResult(False, f"Failed to prepare mountpoint {expected_mountpoint}.", steps)
+                return PartitionFixResult(
+                    False,
+                    self._mount_failure_message(
+                        device=device,
+                        steps=steps,
+                        fallback=f"Failed to prepare mountpoint {expected_mountpoint}.",
+                    ),
+                    steps,
+                )
 
             mount_cmd, mount_step_name = self._build_mount_command(
                 device=device,
@@ -95,6 +161,7 @@ class PartitionActionService:
                 step=mount_step_name,
                 command=mount_cmd,
                 timeout=300,
+                retry_attempts=1,
             )
             steps.append(mount_step)
             if not mount_step.ok:
@@ -105,7 +172,15 @@ class PartitionActionService:
                 )
                 if recovered:
                     return PartitionFixResult(True, recovery_message, steps)
-                return PartitionFixResult(False, f"Mount failed for {device}. Use Fix to repair.", steps)
+                return PartitionFixResult(
+                    False,
+                    self._mount_failure_message(
+                        device=device,
+                        steps=steps,
+                        fallback=f"Mount failed for {device}. Use Fix to repair.",
+                    ),
+                    steps,
+                )
         else:
             mount_cmd, mount_step_name = self._build_mount_command(
                 device=device,
@@ -116,6 +191,7 @@ class PartitionActionService:
                 step=mount_step_name,
                 command=mount_cmd,
                 timeout=300,
+                retry_attempts=1,
             )
             steps.append(mount_step)
             if not mount_step.ok:
@@ -126,7 +202,15 @@ class PartitionActionService:
                 )
                 if recovered:
                     return PartitionFixResult(True, recovery_message, steps)
-                return PartitionFixResult(False, f"Mount failed for {device}. Use Fix to repair.", steps)
+                return PartitionFixResult(
+                    False,
+                    self._mount_failure_message(
+                        device=device,
+                        steps=steps,
+                        fallback=f"Mount failed for {device}. Use Fix to repair.",
+                    ),
+                    steps,
+                )
 
         verify_step = self._verify_mount_step(device=device, expected_mountpoint=expected_mountpoint)
         steps.append(verify_step)
@@ -138,14 +222,22 @@ class PartitionActionService:
             )
             if recovered:
                 return PartitionFixResult(True, recovery_message, steps)
-            return PartitionFixResult(False, f"Mount command completed but partition is still not mounted ({device}).", steps)
+            return PartitionFixResult(
+                False,
+                self._mount_failure_message(
+                    device=device,
+                    steps=steps,
+                    fallback=f"Mount command completed but partition is still not mounted ({device}).",
+                ),
+                steps,
+            )
 
         return PartitionFixResult(True, f"Partition {device} mounted successfully.", steps)
 
     def fix_partition(self, partition: PartitionEntry) -> PartitionFixResult:
         steps: list[PartitionFixStepResult] = []
         device = partition.device
-        filesystem = partition.filesystem.lower()
+        filesystem = (partition.filesystem or "").lower()
         mountpoint = partition.mountpoint if partition.mountpoint != "-" else ""
         expected_mountpoint = partition.expected_mountpoint if partition.expected_mountpoint != "-" else ""
         mountpoint_lower = mountpoint.lower()
@@ -160,6 +252,8 @@ class PartitionActionService:
                 f"Refusing to run automatic fix on system mountpoint ({mountpoint or expected_mountpoint}).",
                 steps,
             )
+        if expected_mountpoint and not _is_safe_mountpoint(expected_mountpoint):
+            return PartitionFixResult(False, f"Unsafe mountpoint path rejected: {expected_mountpoint}", steps)
 
         if _is_special_mountpoint(expected_lower) or _is_special_mountpoint(mountpoint_lower):
             special_target = SPECIAL_TARGET_CANONICAL
@@ -187,6 +281,7 @@ class PartitionActionService:
                 step=f"Unmount {device}",
                 command=["umount", device],
                 timeout=300,
+                retry_attempts=1,
             )
             steps.append(unmount_step)
             if not unmount_step.ok:
@@ -197,6 +292,7 @@ class PartitionActionService:
                 step=f"Run fsck repair on {device}",
                 command=["fsck", "-y", device],
                 timeout=3600,
+                retry_attempts=1,
             )
             steps.append(repair_step)
             if not repair_step.ok:
@@ -206,6 +302,7 @@ class PartitionActionService:
                 step=f"Run ntfsfix repair on {device}",
                 command=["ntfsfix", device],
                 timeout=3600,
+                retry_attempts=1,
             )
             steps.append(repair_step)
             if not repair_step.ok:
@@ -266,6 +363,7 @@ class PartitionActionService:
             step=f"Ensure mountpoint directory {target_mountpoint}",
             command=["mkdir", "-p", target_mountpoint],
             timeout=120,
+            retry_attempts=1,
         )
         steps.append(mkdir_step)
         if not mkdir_step.ok:
@@ -286,6 +384,7 @@ class PartitionActionService:
                 step=mount_step_name,
                 command=mount_cmd,
                 timeout=300,
+                retry_attempts=1,
             )
             steps.append(mount_step)
             if mount_step.ok:
@@ -326,6 +425,7 @@ class PartitionActionService:
                 step=f"Ensure mountpoint directory {expected_mountpoint}",
                 command=["mkdir", "-p", expected_mountpoint],
                 timeout=120,
+                retry_attempts=1,
             )
             steps.append(mkdir_step)
             if not mkdir_step.ok:
@@ -335,6 +435,7 @@ class PartitionActionService:
                 step=f"Mount {device} to {expected_mountpoint}",
                 command=["mount", device, expected_mountpoint],
                 timeout=300,
+                retry_attempts=1,
             )
             steps.append(mount_step)
             return steps
@@ -343,6 +444,7 @@ class PartitionActionService:
             step=f"Mount {device}",
             command=["mount", device],
             timeout=300,
+            retry_attempts=1,
         )
         steps.append(mount_step)
         return steps
@@ -350,16 +452,25 @@ class PartitionActionService:
     def _verify_mount_step(self, *, device: str, expected_mountpoint: str) -> PartitionFixStepResult:
         result = run_command(["findmnt", "-rn", "-S", device, "-o", "TARGET"], timeout=15)
         targets = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        if expected_mountpoint:
-            ok = expected_mountpoint in targets
-            stderr = result.stderr
-            if not ok and not stderr:
-                stderr = f"Expected target not mounted: {expected_mountpoint}"
-        else:
-            ok = bool(targets)
-            stderr = result.stderr
-            if not ok and not stderr:
-                stderr = "Partition is still not mounted."
+        ok = expected_mountpoint in targets if expected_mountpoint else bool(targets)
+        attempts = 1
+
+        while not ok and attempts < VERIFY_RETRY_ATTEMPTS:
+            attempts += 1
+            time.sleep(VERIFY_RETRY_DELAY_SECONDS)
+            result = run_command(["findmnt", "-rn", "-S", device, "-o", "TARGET"], timeout=15)
+            targets = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+            ok = expected_mountpoint in targets if expected_mountpoint else bool(targets)
+
+        stderr = result.stderr
+        if not ok and not stderr:
+            stderr = (
+                f"Expected target not mounted: {expected_mountpoint}"
+                if expected_mountpoint
+                else "Partition is still not mounted."
+            )
+        if attempts > 1:
+            stderr = f"{stderr} (checked {attempts} times)".strip()
 
         return PartitionFixStepResult(
             ok=ok and result.ok,
@@ -372,14 +483,29 @@ class PartitionActionService:
             execution_seconds=0.0,
         )
 
-    def _run_privileged_step(self, *, step: str, command: list[str], timeout: int) -> PartitionFixStepResult:
-        result = run_privileged_command(command, timeout=timeout)
+    def _run_privileged_step(
+        self,
+        *,
+        step: str,
+        command: list[str],
+        timeout: int,
+        retry_attempts: int = 0,
+    ) -> PartitionFixStepResult:
+        result, attempts = run_privileged_command_with_retry(
+            command,
+            timeout=timeout,
+            retry_attempts=retry_attempts,
+            retry_delay_seconds=1.0,
+        )
+        stderr = result.stderr
+        if attempts > 1:
+            stderr = f"{stderr}\nRetried attempts: {attempts}".strip()
         return PartitionFixStepResult(
             ok=result.ok,
             code=result.code,
             step=step,
             stdout=result.stdout,
-            stderr=result.stderr,
+            stderr=stderr,
             command=result.command,
             queue_wait_seconds=result.queue_wait_seconds,
             execution_seconds=result.execution_seconds,
@@ -388,9 +514,17 @@ class PartitionActionService:
     def _verify_target_mounted_step(self, mountpoint: str) -> PartitionFixStepResult:
         result = run_command(["findmnt", "-rn", "-T", mountpoint, "-o", "SOURCE,TARGET"], timeout=15)
         ok = result.ok and bool(result.stdout.strip())
+        attempts = 1
+        while not ok and attempts < VERIFY_RETRY_ATTEMPTS:
+            attempts += 1
+            time.sleep(VERIFY_RETRY_DELAY_SECONDS)
+            result = run_command(["findmnt", "-rn", "-T", mountpoint, "-o", "SOURCE,TARGET"], timeout=15)
+            ok = result.ok and bool(result.stdout.strip())
         stderr = result.stderr
         if not ok and not stderr:
             stderr = f"Target mountpoint is not mounted: {mountpoint}"
+        if attempts > 1:
+            stderr = f"{stderr} (checked {attempts} times)".strip()
         return PartitionFixStepResult(
             ok=ok,
             code=result.code,

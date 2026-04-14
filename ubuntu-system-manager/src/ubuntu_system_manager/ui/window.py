@@ -33,7 +33,7 @@ from ubuntu_system_manager.services.system_info import SystemInfoService
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application) -> None:
         super().__init__(application=app)
-        self.set_title("Ubuntu System Manager - Phase 3")
+        self.set_title("Ubuntu System Manager - Phase 4")
         self.set_default_size(1300, 860)
 
         self._system_service = SystemInfoService()
@@ -46,6 +46,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="phase2-worker")
         self._refresh_inflight = False
         self._operation_inflight = False
+        self._refresh_generation = 0
         self._packages: list[PackageEntry] = []
         self._package_render_generation = 0
         self._partitions: list[PartitionEntry] = []
@@ -376,13 +377,34 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _start_refresh(self, *, reason: str) -> None:
         if self._refresh_inflight:
+            self.status_label.set_text("Refresh already running; please wait...")
             return
+        self._refresh_generation += 1
+        refresh_generation = self._refresh_generation
         self._refresh_inflight = True
         self.status_label.set_text(f"Refreshing data ({reason})...")
         self._update_controls_state()
 
         future = self._executor.submit(self._collect_snapshot)
-        future.add_done_callback(lambda fut: GLib.idle_add(self._apply_snapshot, fut))
+        future.add_done_callback(
+            lambda fut, generation=refresh_generation: GLib.idle_add(self._apply_snapshot, fut, generation)
+        )
+        GLib.timeout_add_seconds(90, self._on_refresh_watchdog, refresh_generation, reason)
+
+    def _on_refresh_watchdog(self, refresh_generation: int, reason: str) -> bool:
+        if refresh_generation != self._refresh_generation:
+            return False
+        if not self._refresh_inflight:
+            return False
+        self._refresh_inflight = False
+        self.status_label.set_text(
+            (
+                f"Refresh timed out ({reason}). Last data is kept. "
+                "Check package/disk activity and click Refresh to retry."
+            )
+        )
+        self._update_controls_state()
+        return False
 
     def _collect_snapshot(self) -> dict[str, Any]:
         snapshot: dict[str, Any] = {
@@ -394,22 +416,24 @@ class MainWindow(Adw.ApplicationWindow):
             "errors": [],
             "collected_at": datetime.now(),
         }
-        jobs: dict[str, Future[Any]] = {
-            "metrics": self._executor.submit(self._system_service.collect),
-            "packages": self._executor.submit(self._package_service.collect),
-            "bluetooth_status": self._executor.submit(self._bluetooth_service.adapter_status),
-            "bluetooth_devices": self._executor.submit(self._bluetooth_service.collect),
-            "partitions": self._executor.submit(self._partition_service.collect),
+        jobs: dict[str, Any] = {
+            "metrics": self._system_service.collect,
+            "packages": self._package_service.collect,
+            "bluetooth_status": self._bluetooth_service.adapter_status,
+            "bluetooth_devices": self._bluetooth_service.collect,
+            "partitions": self._partition_service.collect,
         }
-        for key, future in jobs.items():
+        for key, runner in jobs.items():
             try:
-                snapshot[key] = future.result()
+                snapshot[key] = runner()
             except Exception as exc:  # noqa: BLE001
                 snapshot["errors"].append(f"{key.replace('_', ' ')}: {exc}")
 
         return snapshot
 
-    def _apply_snapshot(self, future: Future[dict[str, Any]]) -> bool:
+    def _apply_snapshot(self, future: Future[dict[str, Any]], refresh_generation: int) -> bool:
+        if refresh_generation != self._refresh_generation:
+            return False
         try:
             snapshot = future.result()
         except Exception as exc:  # noqa: BLE001

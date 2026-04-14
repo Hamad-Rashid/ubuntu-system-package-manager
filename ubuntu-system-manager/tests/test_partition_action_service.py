@@ -20,15 +20,18 @@ class PartitionActionServiceTests(unittest.TestCase):
         self.service = PartitionActionService()
 
     @staticmethod
-    def _priv_result(command: list[str], ok: bool = True, code: int = 0) -> PrivilegedCommandResult:
-        return PrivilegedCommandResult(
-            ok=ok,
-            stdout="ok" if ok else "",
-            stderr="" if ok else "failed",
-            code=code,
-            command=command,
-            queue_wait_seconds=0.01,
-            execution_seconds=0.11,
+    def _priv_result(command: list[str], ok: bool = True, code: int = 0) -> tuple[PrivilegedCommandResult, int]:
+        return (
+            PrivilegedCommandResult(
+                ok=ok,
+                stdout="ok" if ok else "",
+                stderr="" if ok else "failed",
+                code=code,
+                command=command,
+                queue_wait_seconds=0.01,
+                execution_seconds=0.11,
+            ),
+            1,
         )
 
     @staticmethod
@@ -52,7 +55,7 @@ class PartitionActionServiceTests(unittest.TestCase):
         mount_cmd = ["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"]
         with (
             mock.patch(
-                "ubuntu_system_manager.services.partition_action_service.run_privileged_command",
+                "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
                 side_effect=[self._priv_result(mkdir_cmd), self._priv_result(mount_cmd)],
             ) as mock_priv,
             mock.patch(
@@ -79,7 +82,7 @@ class PartitionActionServiceTests(unittest.TestCase):
     def test_special_mount_fix_reports_failure_if_mount_not_restored(self) -> None:
         with (
             mock.patch(
-                "ubuntu_system_manager.services.partition_action_service.run_privileged_command",
+                "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
                 side_effect=[
                     self._priv_result(["pkexec", "mkdir", "-p", "/media/hamad/Other"]),
                     self._priv_result(["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"]),
@@ -105,7 +108,7 @@ class PartitionActionServiceTests(unittest.TestCase):
         mount_cmd = ["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"]
         with (
             mock.patch(
-                "ubuntu_system_manager.services.partition_action_service.run_privileged_command",
+                "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
                 side_effect=[self._priv_result(mkdir_cmd), self._priv_result(mount_cmd)],
             ) as mock_priv,
             mock.patch(
@@ -126,7 +129,7 @@ class PartitionActionServiceTests(unittest.TestCase):
 
     def test_mount_partition_failure_suggests_fix(self) -> None:
         with mock.patch(
-            "ubuntu_system_manager.services.partition_action_service.run_privileged_command",
+            "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
             side_effect=[
                 self._priv_result(["pkexec", "mkdir", "-p", "/media/hamad/Other"]),
                 self._priv_result(
@@ -146,7 +149,7 @@ class PartitionActionServiceTests(unittest.TestCase):
     def test_mount_partition_uses_sda1_fallback_for_special_target(self) -> None:
         with (
             mock.patch(
-                "ubuntu_system_manager.services.partition_action_service.run_privileged_command",
+                "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
                 side_effect=[
                     self._priv_result(["pkexec", "mkdir", "-p", "/media/hamad/Other"]),
                     self._priv_result(
@@ -186,7 +189,7 @@ class PartitionActionServiceTests(unittest.TestCase):
     def test_mount_partition_unknown_filesystem_can_use_ntfs_fallback(self) -> None:
         with (
             mock.patch(
-                "ubuntu_system_manager.services.partition_action_service.run_privileged_command",
+                "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
                 side_effect=[
                     self._priv_result(["pkexec", "mount", "/dev/sda2"], ok=False, code=32),
                     self._priv_result(["pkexec", "mkdir", "-p", "/media/hamad/Other"]),
@@ -221,7 +224,7 @@ class PartitionActionServiceTests(unittest.TestCase):
     def test_mount_partition_normalizes_special_target_case(self) -> None:
         with (
             mock.patch(
-                "ubuntu_system_manager.services.partition_action_service.run_privileged_command",
+                "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
                 side_effect=[
                     self._priv_result(["pkexec", "mkdir", "-p", "/media/hamad/Other"]),
                     self._priv_result(["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"]),
@@ -251,7 +254,7 @@ class PartitionActionServiceTests(unittest.TestCase):
     def test_mount_partition_normalizes_special_target_variant_other1(self) -> None:
         with (
             mock.patch(
-                "ubuntu_system_manager.services.partition_action_service.run_privileged_command",
+                "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
                 side_effect=[
                     self._priv_result(["pkexec", "mkdir", "-p", "/media/hamad/Other"]),
                     self._priv_result(["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"]),
