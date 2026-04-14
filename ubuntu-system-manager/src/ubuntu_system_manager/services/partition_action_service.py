@@ -7,8 +7,15 @@ from ubuntu_system_manager.models import PartitionEntry
 from .command_runner import run_command, run_privileged_command
 
 EXT_FILESYSTEMS = {"ext2", "ext3", "ext4"}
-SPECIAL_MOUNTPOINT = "/media/hamad/other"
+NTFS_FILESYSTEMS = {"ntfs", "ntfs3", "fuseblk"}
+SPECIAL_MOUNTPOINT_PREFIX = "/media/hamad/other"
+SPECIAL_TARGET_CANONICAL = "/media/hamad/Other"
+SPECIAL_FALLBACK_DEVICE = "/dev/sda1"
 SYSTEM_MOUNTPOINTS = {"/", "/boot", "/boot/efi"}
+
+
+def _is_special_mountpoint(path: str) -> bool:
+    return (path or "").strip().lower().startswith(SPECIAL_MOUNTPOINT_PREFIX)
 
 
 @dataclass(slots=True)
@@ -46,28 +53,29 @@ class PartitionActionService:
             return PartitionFixResult(False, "Refusing to mount to a protected system mountpoint.", steps)
 
         if expected_mountpoint:
-            if expected_mountpoint.lower() == SPECIAL_MOUNTPOINT:
+            if _is_special_mountpoint(expected_mountpoint):
+                special_target = SPECIAL_TARGET_CANONICAL
                 special_steps = self._run_special_mount_fix(
                     device=device,
                     filesystem=filesystem,
-                    target_mountpoint=expected_mountpoint,
+                    target_mountpoint=special_target,
                 )
                 steps.extend(special_steps)
                 if not special_steps or not special_steps[-1].ok:
                     return PartitionFixResult(False, f"Mount failed for {device}. Use Fix to repair.", steps)
 
-                verify_target_step = self._verify_target_mounted_step(expected_mountpoint)
+                verify_target_step = self._verify_target_mounted_step(special_target)
                 steps.append(verify_target_step)
                 if not verify_target_step.ok:
                     return PartitionFixResult(
                         False,
                         (
-                            f"Mount command completed but target is still not mounted ({expected_mountpoint}). "
+                            f"Mount command completed but target is still not mounted ({special_target}). "
                             "Use Fix to repair."
                         ),
                         steps,
                     )
-                return PartitionFixResult(True, f"Partition mounted successfully at {expected_mountpoint}.", steps)
+                return PartitionFixResult(True, f"Partition mounted successfully at {special_target}.", steps)
 
             mkdir_step = self._run_privileged_step(
                 step=f"Ensure mountpoint directory {expected_mountpoint}",
@@ -90,6 +98,13 @@ class PartitionActionService:
             )
             steps.append(mount_step)
             if not mount_step.ok:
+                recovered, recovery_message = self._attempt_ntfs_recovery_mount(
+                    steps=steps,
+                    device=device,
+                    filesystem=filesystem,
+                )
+                if recovered:
+                    return PartitionFixResult(True, recovery_message, steps)
                 return PartitionFixResult(False, f"Mount failed for {device}. Use Fix to repair.", steps)
         else:
             mount_cmd, mount_step_name = self._build_mount_command(
@@ -104,11 +119,25 @@ class PartitionActionService:
             )
             steps.append(mount_step)
             if not mount_step.ok:
+                recovered, recovery_message = self._attempt_ntfs_recovery_mount(
+                    steps=steps,
+                    device=device,
+                    filesystem=filesystem,
+                )
+                if recovered:
+                    return PartitionFixResult(True, recovery_message, steps)
                 return PartitionFixResult(False, f"Mount failed for {device}. Use Fix to repair.", steps)
 
         verify_step = self._verify_mount_step(device=device, expected_mountpoint=expected_mountpoint)
         steps.append(verify_step)
         if not verify_step.ok:
+            recovered, recovery_message = self._attempt_ntfs_recovery_mount(
+                steps=steps,
+                device=device,
+                filesystem=filesystem,
+            )
+            if recovered:
+                return PartitionFixResult(True, recovery_message, steps)
             return PartitionFixResult(False, f"Mount command completed but partition is still not mounted ({device}).", steps)
 
         return PartitionFixResult(True, f"Partition {device} mounted successfully.", steps)
@@ -132,8 +161,8 @@ class PartitionActionService:
                 steps,
             )
 
-        if expected_lower == SPECIAL_MOUNTPOINT or mountpoint_lower == SPECIAL_MOUNTPOINT:
-            special_target = expected_mountpoint or mountpoint or "/media/hamad/Other"
+        if _is_special_mountpoint(expected_lower) or _is_special_mountpoint(mountpoint_lower):
+            special_target = SPECIAL_TARGET_CANONICAL
             special_fix_steps = self._run_special_mount_fix(
                 device=device,
                 filesystem=filesystem,
@@ -141,19 +170,8 @@ class PartitionActionService:
             )
             steps.extend(special_fix_steps)
             if not special_fix_steps or not special_fix_steps[-1].ok:
-                return PartitionFixResult(False, f"Dedicated mount fix failed for {SPECIAL_MOUNTPOINT}.", steps)
+                return PartitionFixResult(False, f"Dedicated mount fix failed for {SPECIAL_TARGET_CANONICAL}.", steps)
 
-            verify_step = self._verify_mount_step(device=device, expected_mountpoint=special_target)
-            steps.append(verify_step)
-            if not verify_step.ok:
-                return PartitionFixResult(
-                    False,
-                    (
-                        f"Dedicated mount fix ran, but mount is still failing for {SPECIAL_MOUNTPOINT}. "
-                        "Check command output and mount logs."
-                    ),
-                    steps,
-                )
             verify_target_step = self._verify_target_mounted_step(special_target)
             steps.append(verify_target_step)
             if not verify_target_step.ok:
@@ -191,6 +209,13 @@ class PartitionActionService:
             )
             steps.append(repair_step)
             if not repair_step.ok:
+                recovered, recovery_message = self._attempt_ntfs_recovery_mount(
+                    steps=steps,
+                    device=device,
+                    filesystem=filesystem,
+                )
+                if recovered:
+                    return PartitionFixResult(True, recovery_message, steps)
                 return PartitionFixResult(False, f"ntfsfix repair failed on {device}.", steps)
         else:
             return PartitionFixResult(
@@ -206,11 +231,25 @@ class PartitionActionService:
         steps.extend(remount_steps)
         for remount_step in remount_steps:
             if not remount_step.ok:
+                recovered, recovery_message = self._attempt_ntfs_recovery_mount(
+                    steps=steps,
+                    device=device,
+                    filesystem=filesystem,
+                )
+                if recovered:
+                    return PartitionFixResult(True, recovery_message, steps)
                 return PartitionFixResult(False, f"Repair completed but remount failed for {device}.", steps)
 
         verify_step = self._verify_mount_step(device=device, expected_mountpoint=expected_mountpoint)
         steps.append(verify_step)
         if not verify_step.ok:
+            recovered, recovery_message = self._attempt_ntfs_recovery_mount(
+                steps=steps,
+                device=device,
+                filesystem=filesystem,
+            )
+            if recovered:
+                return PartitionFixResult(True, recovery_message, steps)
             return PartitionFixResult(False, f"Repair completed but mount validation failed for {device}.", steps)
 
         return PartitionFixResult(True, f"Partition {device} fixed successfully.", steps)
@@ -233,16 +272,13 @@ class PartitionActionService:
             return steps
 
         candidate_devices: list[str] = []
-        for candidate in [device, "/dev/sda1"]:
+        for candidate in [device, SPECIAL_FALLBACK_DEVICE]:
             if candidate and candidate not in candidate_devices:
                 candidate_devices.append(candidate)
 
         for idx, candidate_device in enumerate(candidate_devices, start=1):
-            mount_cmd, mount_step_name = self._build_mount_command(
-                device=candidate_device,
-                filesystem=filesystem,
-                target_mountpoint=target_mountpoint,
-            )
+            mount_cmd = ["mount", "-t", "ntfs-3g", candidate_device, target_mountpoint]
+            mount_step_name = f"Mount {candidate_device} to {target_mountpoint} with ntfs-3g"
             if candidate_device != device:
                 mount_step_name = f"{mount_step_name} (fallback #{idx})"
 
@@ -255,6 +291,33 @@ class PartitionActionService:
             if mount_step.ok:
                 break
         return steps
+
+    def _attempt_ntfs_recovery_mount(
+        self,
+        *,
+        steps: list[PartitionFixStepResult],
+        device: str,
+        filesystem: str,
+    ) -> tuple[bool, str]:
+        filesystem_normalized = (filesystem or "").strip().lower()
+        if filesystem_normalized not in NTFS_FILESYSTEMS and filesystem_normalized not in {"", "-", "unknown"}:
+            return False, ""
+
+        recovery_steps = self._run_special_mount_fix(
+            device=device,
+            filesystem=filesystem,
+            target_mountpoint=SPECIAL_TARGET_CANONICAL,
+        )
+        steps.extend(recovery_steps)
+        if not recovery_steps or not recovery_steps[-1].ok:
+            return False, f"NTFS fallback mount failed for {device}."
+
+        verify_target_step = self._verify_target_mounted_step(SPECIAL_TARGET_CANONICAL)
+        steps.append(verify_target_step)
+        if not verify_target_step.ok:
+            return False, f"NTFS fallback mounted command ran, but target is still unavailable ({SPECIAL_TARGET_CANONICAL})."
+
+        return True, f"Partition recovered via fallback mount at {SPECIAL_TARGET_CANONICAL}."
 
     def _attempt_remount_steps(self, *, device: str, expected_mountpoint: str) -> list[PartitionFixStepResult]:
         steps: list[PartitionFixStepResult] = []
@@ -340,7 +403,7 @@ class PartitionActionService:
         )
 
     def _build_mount_command(self, *, device: str, filesystem: str, target_mountpoint: str) -> tuple[list[str], str]:
-        if filesystem in {"ntfs", "ntfs3", "fuseblk"}:
+        if filesystem in NTFS_FILESYSTEMS:
             if target_mountpoint:
                 return (
                     ["mount", "-t", "ntfs-3g", device, target_mountpoint],

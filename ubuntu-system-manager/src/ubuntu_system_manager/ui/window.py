@@ -103,9 +103,9 @@ class MainWindow(Adw.ApplicationWindow):
         metrics_grid.attach(Gtk.Label(label="Used Storage:", xalign=0), 2, 1, 1, 1)
         metrics_grid.attach(self.used_storage_label, 3, 1, 1, 1)
 
-        split_vertical = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
-        split_vertical.set_vexpand(True)
-        root.append(split_vertical)
+        sections_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        sections_box.set_vexpand(True)
+        root.append(sections_box)
 
         (
             pkg_frame,
@@ -117,10 +117,13 @@ class MainWindow(Adw.ApplicationWindow):
             self.package_apt_listbox,
             self.package_log_view,
         ) = self._build_package_section()
-        split_vertical.set_start_child(pkg_frame)
+        pkg_frame.set_vexpand(True)
+        sections_box.append(pkg_frame)
 
         lower_split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        split_vertical.set_end_child(lower_split)
+        lower_split.set_wide_handle(True)
+        lower_split.set_vexpand(True)
+        sections_box.append(lower_split)
 
         bt_frame, self.bluetooth_summary_label, self.bluetooth_view = self._build_text_section(
             "Bluetooth Devices"
@@ -131,8 +134,88 @@ class MainWindow(Adw.ApplicationWindow):
             self._build_partition_section()
         )
         lower_split.set_end_child(partition_frame)
+        GLib.idle_add(self._set_half_split_position_once, lower_split)
 
         self._update_controls_state()
+
+    def _set_half_split_position_once(self, paned: Gtk.Paned) -> bool:
+        width = paned.get_allocated_width()
+        if width <= 0:
+            return True
+        paned.set_position(width // 2)
+        return False
+
+    def _attach_collapse_controls(
+        self,
+        frame: Gtk.Frame,
+        title: str,
+        content: Gtk.Widget,
+        *,
+        start_expanded: bool,
+    ) -> None:
+        container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        frame.set_child(container)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        container.append(header)
+
+        title_label = Gtk.Label(label=title, xalign=0)
+        title_label.set_hexpand(True)
+        header.append(title_label)
+
+        toggle_button = Gtk.Button(label="-" if start_expanded else "+")
+        toggle_button.set_tooltip_text("Collapse section" if start_expanded else "Expand section")
+        header.append(toggle_button)
+
+        revealer = Gtk.Revealer()
+        revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        revealer.set_reveal_child(start_expanded)
+        revealer.set_child(content)
+        container.append(revealer)
+
+        def _on_toggle(_button: Gtk.Button) -> None:
+            expanded = not revealer.get_reveal_child()
+            revealer.set_reveal_child(expanded)
+            toggle_button.set_label("-" if expanded else "+")
+            toggle_button.set_tooltip_text("Collapse section" if expanded else "Expand section")
+
+        toggle_button.connect("clicked", _on_toggle)
+
+    def _append_collapsible_subsection(
+        self,
+        parent: Gtk.Box,
+        *,
+        title: str,
+        content: Gtk.Widget,
+        start_expanded: bool,
+    ) -> None:
+        section_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        parent.append(section_box)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        section_box.append(header)
+
+        title_label = Gtk.Label(label=title, xalign=0)
+        title_label.set_hexpand(True)
+        header.append(title_label)
+
+        toggle_button = Gtk.Button(label="-" if start_expanded else "+")
+        toggle_button.set_tooltip_text("Collapse section" if start_expanded else "Expand section")
+        header.append(toggle_button)
+
+        revealer = Gtk.Revealer()
+        revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        revealer.set_reveal_child(start_expanded)
+        revealer.set_child(content)
+        section_box.append(revealer)
+
+        def _on_toggle(_button: Gtk.Button) -> None:
+            expanded = not revealer.get_reveal_child()
+            revealer.set_reveal_child(expanded)
+            toggle_button.set_label("-" if expanded else "+")
+            toggle_button.set_tooltip_text("Collapse section" if expanded else "Expand section")
+
+        toggle_button.connect("clicked", _on_toggle)
 
     def _build_text_section(self, title: str) -> tuple[Gtk.Frame, Gtk.Label, Gtk.TextView]:
         frame = Gtk.Frame(label=title)
@@ -171,13 +254,13 @@ class MainWindow(Adw.ApplicationWindow):
         Gtk.ListBox,
         Gtk.TextView,
     ]:
-        frame = Gtk.Frame(label="Packages")
+        frame = Gtk.Frame()
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.set_margin_top(10)
         box.set_margin_bottom(10)
         box.set_margin_start(10)
         box.set_margin_end(10)
-        frame.set_child(box)
+        self._attach_collapse_controls(frame, "Packages", box, start_expanded=True)
 
         summary_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         box.append(summary_row)
@@ -227,12 +310,8 @@ class MainWindow(Adw.ApplicationWindow):
         apt_scroller.set_child(apt_listbox)
         notebook.append_page(apt_scroller, Gtk.Label(label="APT"))
 
-        log_title = Gtk.Label(label="Package Action Log", xalign=0)
-        box.append(log_title)
-
         log_scroller = Gtk.ScrolledWindow()
         log_scroller.set_min_content_height(120)
-        box.append(log_scroller)
 
         log_view = Gtk.TextView()
         log_view.set_editable(False)
@@ -240,6 +319,12 @@ class MainWindow(Adw.ApplicationWindow):
         log_view.set_monospace(True)
         log_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         log_scroller.set_child(log_view)
+        self._append_collapsible_subsection(
+            box,
+            title="Package Action Log",
+            content=log_scroller,
+            start_expanded=True,
+        )
 
         return frame, summary, notebook, all_listbox, updates_listbox, snap_listbox, apt_listbox, log_view
 
@@ -264,12 +349,8 @@ class MainWindow(Adw.ApplicationWindow):
         partition_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
         partition_scroller.set_child(partition_listbox)
 
-        log_title = Gtk.Label(label="Partition Fix Log", xalign=0)
-        box.append(log_title)
-
         log_scroller = Gtk.ScrolledWindow()
         log_scroller.set_min_content_height(120)
-        box.append(log_scroller)
 
         log_view = Gtk.TextView()
         log_view.set_editable(False)
@@ -277,6 +358,12 @@ class MainWindow(Adw.ApplicationWindow):
         log_view.set_monospace(True)
         log_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         log_scroller.set_child(log_view)
+        self._append_collapsible_subsection(
+            box,
+            title="Partition Fix Log",
+            content=log_scroller,
+            start_expanded=True,
+        )
 
         return frame, summary, partition_listbox, log_view
 
