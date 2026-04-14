@@ -38,5 +38,8 @@ class PartitionEntry:
     device: str
     filesystem: str
     mountpoint: str
+    expected_mountpoint: str
     size: str
     status: str
+    status_detail: str
+    can_fix: bool

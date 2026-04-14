@@ -1,4 +1,4 @@
-# Ubuntu System Manager (Phase 2)
+# Ubuntu System Manager (Phase 3)
 
 Current implementation of the planned Ubuntu desktop app:
 
@@ -14,7 +14,7 @@ Current implementation of the planned Ubuntu desktop app:
   - `Update All` for all currently upgradable packages
 - Package action log in UI
 - Bluetooth/USB device panel with battery percentage (if available)
-- Partition health list (mounted/not mounted/mount error)
+- Partition health panel with per-partition `Fix` action and fix logs
 
 ## Requirements
 
@@ -43,4 +43,9 @@ cd /media/hamad/Office/hamad/ubuntu-system-manager
 - Privileged operations are serialized to avoid package manager lock conflicts.
 - `Update All` runs grouped APT and Snap updates from a single click.
 - `Enable/Disable` is supported for Snap packages; APT packages show this as unsupported.
+- Partition `Fix` supports:
+  - dedicated `/media/hamad/other` mount workflow using in-app `ntfs-3g` commands (no external script execution)
+  - generic `fsck` flow for ext filesystems
+  - generic `ntfsfix` flow for NTFS
+  - remount + verification after fix
 - Some Bluetooth devices do not expose battery percentage.
