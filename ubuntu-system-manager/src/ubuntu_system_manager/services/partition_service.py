@@ -136,25 +136,31 @@ class PartitionService:
                 if mountpoint:
                     status = "Mounted"
                     status_detail = f"Mounted at {mountpoint}."
+                    can_mount = False
                     can_fix = False
                 else:
                     fs_error, fs_error_detail = _detect_filesystem_error(path, fstype, mounted=False)
                     if fs_error:
                         status = "Filesystem error"
                         status_detail = fs_error_detail or "Filesystem check reported issues."
+                        can_mount = False
                         can_fix = True
                     elif expected_target and expected_target not in mounted_targets:
                         status = "Mount error"
                         status_detail = f"Expected mountpoint: {expected_target}"
-                        can_fix = True
+                        can_mount = True
+                        can_fix = False
                     else:
                         status = "Not mounted"
                         status_detail = "No active mountpoint."
+                        can_mount = True
                         can_fix = False
 
                 if can_fix and (mountpoint == "/" or expected_target == "/"):
                     can_fix = False
                     status_detail = "Root partition fix is blocked from this panel."
+                if can_mount and (mountpoint == "/" or expected_target == "/"):
+                    can_mount = False
 
                 entries.append(
                     PartitionEntry(
@@ -165,6 +171,7 @@ class PartitionService:
                         size=size,
                         status=status,
                         status_detail=status_detail,
+                        can_mount=can_mount,
                         can_fix=can_fix,
                     )
                 )

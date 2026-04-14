@@ -49,6 +49,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._packages: list[PackageEntry] = []
         self._package_render_generation = 0
         self._partitions: list[PartitionEntry] = []
+        self._partition_mount_failures: dict[str, str] = {}
         self._partition_fix_failures: dict[str, str] = {}
         self._package_log_lines: list[str] = []
         self._partition_log_lines: list[str] = []
@@ -112,6 +113,8 @@ class MainWindow(Adw.ApplicationWindow):
             self.package_notebook,
             self.package_all_listbox,
             self.package_updates_listbox,
+            self.package_snap_listbox,
+            self.package_apt_listbox,
             self.package_log_view,
         ) = self._build_package_section()
         split_vertical.set_start_child(pkg_frame)
@@ -158,7 +161,16 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _build_package_section(
         self,
-    ) -> tuple[Gtk.Frame, Gtk.Label, Gtk.Notebook, Gtk.ListBox, Gtk.ListBox, Gtk.TextView]:
+    ) -> tuple[
+        Gtk.Frame,
+        Gtk.Label,
+        Gtk.Notebook,
+        Gtk.ListBox,
+        Gtk.ListBox,
+        Gtk.ListBox,
+        Gtk.ListBox,
+        Gtk.TextView,
+    ]:
         frame = Gtk.Frame(label="Packages")
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.set_margin_top(10)
@@ -199,6 +211,22 @@ class MainWindow(Adw.ApplicationWindow):
         updates_scroller.set_child(updates_listbox)
         notebook.append_page(updates_scroller, Gtk.Label(label="Updates Available"))
 
+        snap_listbox = Gtk.ListBox()
+        snap_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        snap_scroller = Gtk.ScrolledWindow()
+        snap_scroller.set_hexpand(True)
+        snap_scroller.set_vexpand(True)
+        snap_scroller.set_child(snap_listbox)
+        notebook.append_page(snap_scroller, Gtk.Label(label="Snap"))
+
+        apt_listbox = Gtk.ListBox()
+        apt_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        apt_scroller = Gtk.ScrolledWindow()
+        apt_scroller.set_hexpand(True)
+        apt_scroller.set_vexpand(True)
+        apt_scroller.set_child(apt_listbox)
+        notebook.append_page(apt_scroller, Gtk.Label(label="APT"))
+
         log_title = Gtk.Label(label="Package Action Log", xalign=0)
         box.append(log_title)
 
@@ -213,7 +241,7 @@ class MainWindow(Adw.ApplicationWindow):
         log_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         log_scroller.set_child(log_view)
 
-        return frame, summary, notebook, all_listbox, updates_listbox, log_view
+        return frame, summary, notebook, all_listbox, updates_listbox, snap_listbox, apt_listbox, log_view
 
     def _build_partition_section(self) -> tuple[Gtk.Frame, Gtk.Label, Gtk.ListBox, Gtk.TextView]:
         frame = Gtk.Frame(label="Partition Health")
@@ -323,6 +351,8 @@ class MainWindow(Adw.ApplicationWindow):
             self.used_storage_label.set_text("N/A")
 
         updatable_packages = [item for item in packages if item.update_available]
+        snap_packages = [item for item in packages if item.source == "snap"]
+        apt_packages = [item for item in packages if item.source == "apt"]
         self._packages = packages
         self.package_summary_label.set_text(
             f"Installed packages: {len(packages)} | Updates available: {len(updatable_packages)}"
@@ -341,6 +371,18 @@ class MainWindow(Adw.ApplicationWindow):
             empty_message="No updates available.",
             generation=render_generation,
         )
+        self._rebuild_package_list_async(
+            self.package_snap_listbox,
+            snap_packages,
+            empty_message="No snap packages installed.",
+            generation=render_generation,
+        )
+        self._rebuild_package_list_async(
+            self.package_apt_listbox,
+            apt_packages,
+            empty_message="No apt packages installed.",
+            generation=render_generation,
+        )
 
         bt_count = len([device for device in bluetooth_devices if device.connected])
         self.bluetooth_summary_label.set_text(f"{bluetooth_status} | Connected Bluetooth/USB devices: {bt_count}")
@@ -350,13 +392,27 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
         for entry in partitions:
-            failure_message = self._partition_fix_failures.get(entry.device)
-            if failure_message and entry.status != "Mounted":
-                entry.status = "Fix failed"
-                entry.status_detail = failure_message
-                entry.can_fix = True
-            elif entry.status == "Mounted":
+            mount_failure = self._partition_mount_failures.get(entry.device)
+            fix_failure = self._partition_fix_failures.get(entry.device)
+            if entry.status == "Mounted":
+                self._partition_mount_failures.pop(entry.device, None)
                 self._partition_fix_failures.pop(entry.device, None)
+                entry.can_mount = False
+                entry.can_fix = False
+                continue
+
+            if fix_failure:
+                entry.status = "Fix failed"
+                entry.status_detail = fix_failure
+                entry.can_mount = False
+                entry.can_fix = True
+                continue
+
+            if mount_failure:
+                entry.status = "Mount error"
+                entry.status_detail = mount_failure
+                entry.can_mount = False
+                entry.can_fix = True
 
         self._partitions = partitions
         mount_error_count = len([entry for entry in partitions if entry.status == "Mount error"])
@@ -533,12 +589,14 @@ class MainWindow(Adw.ApplicationWindow):
         detail.set_wrap(True)
         details_box.append(detail)
 
-        fix_button = Gtk.Button(label="Fix")
-        fix_button.set_sensitive(partition.can_fix)
-        if not partition.can_fix:
-            fix_button.set_tooltip_text("Fix is only enabled for mount/filesystem errors.")
-        fix_button.connect("clicked", self._on_partition_fix_clicked, partition)
-        row_box.append(fix_button)
+        if partition.mountpoint == "-" and partition.can_mount:
+            mount_button = Gtk.Button(label="Mount")
+            mount_button.connect("clicked", self._on_partition_mount_clicked, partition)
+            row_box.append(mount_button)
+        elif partition.can_fix:
+            fix_button = Gtk.Button(label="Fix")
+            fix_button.connect("clicked", self._on_partition_fix_clicked, partition)
+            row_box.append(fix_button)
         return row
 
     def _on_package_update_clicked(self, _button: Gtk.Button, package: PackageEntry) -> None:
@@ -643,6 +701,31 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.connect("response", _on_response)
         dialog.present()
 
+    def _on_partition_mount_clicked(self, _button: Gtk.Button, partition: PartitionEntry) -> None:
+        if not partition.can_mount:
+            return
+
+        heading = f"Mount partition '{partition.device}'?"
+        body = (
+            "This will run privileged mount commands.\n"
+            f"Filesystem: {partition.filesystem}\n"
+            f"Expected mountpoint: {partition.expected_mountpoint}"
+        )
+        dialog = Adw.MessageDialog.new(self, heading, body)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("confirm", "Mount")
+        dialog.set_response_appearance("confirm", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def _on_response(_dlg: Adw.MessageDialog, response: str) -> None:
+            if response == "confirm":
+                self._run_partition_mount_action(partition)
+            dialog.close()
+
+        dialog.connect("response", _on_response)
+        dialog.present()
+
     def _confirm_package_action(
         self,
         *,
@@ -721,6 +804,21 @@ class MainWindow(Adw.ApplicationWindow):
             lambda fut, device=partition.device: GLib.idle_add(self._on_partition_fix_done, fut, device)
         )
 
+    def _run_partition_mount_action(self, partition: PartitionEntry) -> None:
+        if self._operation_inflight:
+            self.status_label.set_text("Another privileged operation is already running.")
+            return
+
+        self._operation_inflight = True
+        self._update_controls_state()
+        self._append_partition_log(f"Running mount: {partition.device} [{partition.filesystem}]")
+        self.status_label.set_text(f"Mounting partition {partition.device}...")
+
+        future = self._executor.submit(self._execute_partition_mount_action, partition)
+        future.add_done_callback(
+            lambda fut, device=partition.device: GLib.idle_add(self._on_partition_mount_done, fut, device)
+        )
+
     def _execute_package_action(self, action: str, package: PackageEntry) -> PackageActionResult:
         if action == "update":
             return self._package_action_service.update_package(name=package.name, source=package.source)
@@ -739,6 +837,9 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _execute_partition_fix_action(self, partition: PartitionEntry) -> PartitionFixResult:
         return self._partition_action_service.fix_partition(partition)
+
+    def _execute_partition_mount_action(self, partition: PartitionEntry) -> PartitionFixResult:
+        return self._partition_action_service.mount_partition(partition)
 
     def _on_update_all_done(self, future: Future[list[PackageActionResult]], total_count: int) -> bool:
         try:
@@ -832,6 +933,52 @@ class MainWindow(Adw.ApplicationWindow):
             self._update_controls_state()
             return False
 
+        self._append_partition_steps_log(result)
+
+        if result.ok:
+            self._append_partition_log(f"SUCCESS: {result.message}")
+            self.status_label.set_text(f"Success: {result.message}")
+            self._partition_mount_failures.pop(device, None)
+            self._partition_fix_failures.pop(device, None)
+        else:
+            self._append_partition_log(f"FAILED: {result.message}")
+            self.status_label.set_text(f"Failed: {result.message}")
+            self._partition_fix_failures[device] = result.message
+
+        self._operation_inflight = False
+        self._update_controls_state()
+        self._start_refresh(reason="post-fix")
+        return False
+
+    def _on_partition_mount_done(self, future: Future[PartitionFixResult], device: str) -> bool:
+        try:
+            result = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self._append_partition_log(f"Mount failed unexpectedly: {device} | {exc}")
+            self.status_label.set_text(f"Mount failed: {exc}")
+            self._partition_mount_failures[device] = str(exc)
+            self._operation_inflight = False
+            self._update_controls_state()
+            return False
+
+        self._append_partition_steps_log(result)
+
+        if result.ok:
+            self._append_partition_log(f"SUCCESS: {result.message}")
+            self.status_label.set_text(f"Success: {result.message}")
+            self._partition_mount_failures.pop(device, None)
+            self._partition_fix_failures.pop(device, None)
+        else:
+            self._append_partition_log(f"FAILED: {result.message}")
+            self.status_label.set_text(f"Failed: {result.message}")
+            self._partition_mount_failures[device] = result.message
+
+        self._operation_inflight = False
+        self._update_controls_state()
+        self._start_refresh(reason="post-mount")
+        return False
+
+    def _append_partition_steps_log(self, result: PartitionFixResult) -> None:
         for step in result.steps:
             prefix = "SUCCESS" if step.ok else "FAILED"
             self._append_partition_log(f"{prefix}: {step.step} (exit {step.code})")
@@ -844,20 +991,6 @@ class MainWindow(Adw.ApplicationWindow):
                 self._append_partition_log(f"stdout: {step.stdout[-1200:]}")
             if step.stderr:
                 self._append_partition_log(f"stderr: {step.stderr[-1200:]}")
-
-        if result.ok:
-            self._append_partition_log(f"SUCCESS: {result.message}")
-            self.status_label.set_text(f"Success: {result.message}")
-            self._partition_fix_failures.pop(device, None)
-        else:
-            self._append_partition_log(f"FAILED: {result.message}")
-            self.status_label.set_text(f"Failed: {result.message}")
-            self._partition_fix_failures[device] = result.message
-
-        self._operation_inflight = False
-        self._update_controls_state()
-        self._start_refresh(reason="post-fix")
-        return False
 
     def _append_package_log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")

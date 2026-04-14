@@ -42,4 +42,5 @@ class PartitionEntry:
     size: str
     status: str
     status_detail: str
+    can_mount: bool
     can_fix: bool

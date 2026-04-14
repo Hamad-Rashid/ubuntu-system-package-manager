@@ -31,6 +31,88 @@ class PartitionFixResult:
 
 
 class PartitionActionService:
+    def mount_partition(self, partition: PartitionEntry) -> PartitionFixResult:
+        steps: list[PartitionFixStepResult] = []
+        device = partition.device
+        filesystem = partition.filesystem.lower()
+        mountpoint = partition.mountpoint if partition.mountpoint != "-" else ""
+        expected_mountpoint = partition.expected_mountpoint if partition.expected_mountpoint != "-" else ""
+
+        if not device or device == "-":
+            return PartitionFixResult(False, "Invalid partition device.", steps)
+        if mountpoint:
+            return PartitionFixResult(False, f"Partition {device} is already mounted.", steps)
+        if expected_mountpoint in SYSTEM_MOUNTPOINTS:
+            return PartitionFixResult(False, "Refusing to mount to a protected system mountpoint.", steps)
+
+        if expected_mountpoint:
+            if expected_mountpoint.lower() == SPECIAL_MOUNTPOINT:
+                special_steps = self._run_special_mount_fix(
+                    device=device,
+                    filesystem=filesystem,
+                    target_mountpoint=expected_mountpoint,
+                )
+                steps.extend(special_steps)
+                if not special_steps or not special_steps[-1].ok:
+                    return PartitionFixResult(False, f"Mount failed for {device}. Use Fix to repair.", steps)
+
+                verify_target_step = self._verify_target_mounted_step(expected_mountpoint)
+                steps.append(verify_target_step)
+                if not verify_target_step.ok:
+                    return PartitionFixResult(
+                        False,
+                        (
+                            f"Mount command completed but target is still not mounted ({expected_mountpoint}). "
+                            "Use Fix to repair."
+                        ),
+                        steps,
+                    )
+                return PartitionFixResult(True, f"Partition mounted successfully at {expected_mountpoint}.", steps)
+
+            mkdir_step = self._run_privileged_step(
+                step=f"Ensure mountpoint directory {expected_mountpoint}",
+                command=["mkdir", "-p", expected_mountpoint],
+                timeout=120,
+            )
+            steps.append(mkdir_step)
+            if not mkdir_step.ok:
+                return PartitionFixResult(False, f"Failed to prepare mountpoint {expected_mountpoint}.", steps)
+
+            mount_cmd, mount_step_name = self._build_mount_command(
+                device=device,
+                filesystem=filesystem,
+                target_mountpoint=expected_mountpoint,
+            )
+            mount_step = self._run_privileged_step(
+                step=mount_step_name,
+                command=mount_cmd,
+                timeout=300,
+            )
+            steps.append(mount_step)
+            if not mount_step.ok:
+                return PartitionFixResult(False, f"Mount failed for {device}. Use Fix to repair.", steps)
+        else:
+            mount_cmd, mount_step_name = self._build_mount_command(
+                device=device,
+                filesystem=filesystem,
+                target_mountpoint="",
+            )
+            mount_step = self._run_privileged_step(
+                step=mount_step_name,
+                command=mount_cmd,
+                timeout=300,
+            )
+            steps.append(mount_step)
+            if not mount_step.ok:
+                return PartitionFixResult(False, f"Mount failed for {device}. Use Fix to repair.", steps)
+
+        verify_step = self._verify_mount_step(device=device, expected_mountpoint=expected_mountpoint)
+        steps.append(verify_step)
+        if not verify_step.ok:
+            return PartitionFixResult(False, f"Mount command completed but partition is still not mounted ({device}).", steps)
+
+        return PartitionFixResult(True, f"Partition {device} mounted successfully.", steps)
+
     def fix_partition(self, partition: PartitionEntry) -> PartitionFixResult:
         steps: list[PartitionFixStepResult] = []
         device = partition.device
@@ -58,9 +140,8 @@ class PartitionActionService:
                 target_mountpoint=special_target,
             )
             steps.extend(special_fix_steps)
-            for step in special_fix_steps:
-                if not step.ok:
-                    return PartitionFixResult(False, f"Dedicated mount fix failed for {SPECIAL_MOUNTPOINT}.", steps)
+            if not special_fix_steps or not special_fix_steps[-1].ok:
+                return PartitionFixResult(False, f"Dedicated mount fix failed for {SPECIAL_MOUNTPOINT}.", steps)
 
             verify_step = self._verify_mount_step(device=device, expected_mountpoint=special_target)
             steps.append(verify_step)
@@ -71,6 +152,14 @@ class PartitionActionService:
                         f"Dedicated mount fix ran, but mount is still failing for {SPECIAL_MOUNTPOINT}. "
                         "Check command output and mount logs."
                     ),
+                    steps,
+                )
+            verify_target_step = self._verify_target_mounted_step(special_target)
+            steps.append(verify_target_step)
+            if not verify_target_step.ok:
+                return PartitionFixResult(
+                    False,
+                    f"Dedicated mount fix ran, but target is still not mounted ({special_target}).",
                     steps,
                 )
             return PartitionFixResult(True, "Partition fixed successfully via dedicated mount workflow.", steps)
@@ -143,19 +232,28 @@ class PartitionActionService:
         if not mkdir_step.ok:
             return steps
 
-        if filesystem in {"ntfs", "ntfs3", "fuseblk"}:
-            mount_cmd = ["mount", "-t", "ntfs-3g", device, target_mountpoint]
-            mount_step_name = f"Mount {device} to {target_mountpoint} with ntfs-3g"
-        else:
-            mount_cmd = ["mount", device, target_mountpoint]
-            mount_step_name = f"Mount {device} to {target_mountpoint}"
+        candidate_devices: list[str] = []
+        for candidate in [device, "/dev/sda1"]:
+            if candidate and candidate not in candidate_devices:
+                candidate_devices.append(candidate)
 
-        mount_step = self._run_privileged_step(
-            step=mount_step_name,
-            command=mount_cmd,
-            timeout=300,
-        )
-        steps.append(mount_step)
+        for idx, candidate_device in enumerate(candidate_devices, start=1):
+            mount_cmd, mount_step_name = self._build_mount_command(
+                device=candidate_device,
+                filesystem=filesystem,
+                target_mountpoint=target_mountpoint,
+            )
+            if candidate_device != device:
+                mount_step_name = f"{mount_step_name} (fallback #{idx})"
+
+            mount_step = self._run_privileged_step(
+                step=mount_step_name,
+                command=mount_cmd,
+                timeout=300,
+            )
+            steps.append(mount_step)
+            if mount_step.ok:
+                break
         return steps
 
     def _attempt_remount_steps(self, *, device: str, expected_mountpoint: str) -> list[PartitionFixStepResult]:
@@ -223,3 +321,32 @@ class PartitionActionService:
             queue_wait_seconds=result.queue_wait_seconds,
             execution_seconds=result.execution_seconds,
         )
+
+    def _verify_target_mounted_step(self, mountpoint: str) -> PartitionFixStepResult:
+        result = run_command(["findmnt", "-rn", "-T", mountpoint, "-o", "SOURCE,TARGET"], timeout=15)
+        ok = result.ok and bool(result.stdout.strip())
+        stderr = result.stderr
+        if not ok and not stderr:
+            stderr = f"Target mountpoint is not mounted: {mountpoint}"
+        return PartitionFixStepResult(
+            ok=ok,
+            code=result.code,
+            step=f"Verify target mountpoint {mountpoint}",
+            stdout=result.stdout,
+            stderr=stderr,
+            command=["findmnt", "-rn", "-T", mountpoint, "-o", "SOURCE,TARGET"],
+            queue_wait_seconds=0.0,
+            execution_seconds=0.0,
+        )
+
+    def _build_mount_command(self, *, device: str, filesystem: str, target_mountpoint: str) -> tuple[list[str], str]:
+        if filesystem in {"ntfs", "ntfs3", "fuseblk"}:
+            if target_mountpoint:
+                return (
+                    ["mount", "-t", "ntfs-3g", device, target_mountpoint],
+                    f"Mount {device} to {target_mountpoint} with ntfs-3g",
+                )
+            return (["mount", "-t", "ntfs-3g", device], f"Mount {device} with ntfs-3g")
+        if target_mountpoint:
+            return (["mount", device, target_mountpoint], f"Mount {device} to {target_mountpoint}")
+        return (["mount", device], f"Mount {device}")

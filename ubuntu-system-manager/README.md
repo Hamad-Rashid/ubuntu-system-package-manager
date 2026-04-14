@@ -6,6 +6,8 @@ Current implementation of the planned Ubuntu desktop app:
 - Installed package tabs:
   - `All Installed`
   - `Updates Available`
+  - `Snap`
+  - `APT`
 - Per-package actions:
   - `Update`
   - `Remove`
@@ -48,4 +50,8 @@ cd /media/hamad/Office/hamad/ubuntu-system-manager
   - generic `fsck` flow for ext filesystems
   - generic `ntfsfix` flow for NTFS
   - remount + verification after fix
+- Partition row action behavior:
+  - mounted partition: no action button
+  - not mounted partition: `Mount` button
+  - mount failure/filesystem error: `Fix` button
 - Some Bluetooth devices do not expose battery percentage.

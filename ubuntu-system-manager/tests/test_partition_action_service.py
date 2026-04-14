@@ -41,6 +41,7 @@ class PartitionActionServiceTests(unittest.TestCase):
             "size": "100G",
             "status": "Mount error",
             "status_detail": "Expected mountpoint missing",
+            "can_mount": False,
             "can_fix": True,
         }
         data.update(overrides)
@@ -72,7 +73,11 @@ class PartitionActionServiceTests(unittest.TestCase):
             mock_priv.call_args_list[1].args[0],
             ["mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"],
         )
-        mock_cmd.assert_called_once_with(["findmnt", "-rn", "-S", "/dev/sda1", "-o", "TARGET"], timeout=15)
+        expected_calls = [
+            mock.call(["findmnt", "-rn", "-S", "/dev/sda1", "-o", "TARGET"], timeout=15),
+            mock.call(["findmnt", "-rn", "-T", "/media/hamad/Other", "-o", "SOURCE,TARGET"], timeout=15),
+        ]
+        self.assertEqual(mock_cmd.call_args_list, expected_calls)
 
     def test_special_mount_fix_reports_failure_if_mount_not_restored(self) -> None:
         with (
@@ -97,6 +102,89 @@ class PartitionActionServiceTests(unittest.TestCase):
         result = self.service.fix_partition(self._partition(expected_mountpoint="/"))
         self.assertFalse(result.ok)
         self.assertIn("Refusing", result.message)
+
+    def test_mount_partition_uses_ntfs3g_and_verifies_mount(self) -> None:
+        mkdir_cmd = ["pkexec", "mkdir", "-p", "/media/hamad/Other"]
+        mount_cmd = ["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"]
+        with (
+            mock.patch(
+                "ubuntu_system_manager.services.partition_action_service.run_privileged_command",
+                side_effect=[self._priv_result(mkdir_cmd), self._priv_result(mount_cmd)],
+            ) as mock_priv,
+            mock.patch(
+                "ubuntu_system_manager.services.partition_action_service.run_command",
+                return_value=CommandResult(ok=True, stdout="/media/hamad/Other", stderr="", code=0),
+            ),
+        ):
+            result = self.service.mount_partition(
+                self._partition(status="Not mounted", status_detail="No active mountpoint.", can_mount=True, can_fix=False)
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(mock_priv.call_count, 2)
+        self.assertEqual(
+            mock_priv.call_args_list[1].args[0],
+            ["mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"],
+        )
+
+    def test_mount_partition_failure_suggests_fix(self) -> None:
+        with mock.patch(
+            "ubuntu_system_manager.services.partition_action_service.run_privileged_command",
+            side_effect=[
+                self._priv_result(["pkexec", "mkdir", "-p", "/media/hamad/Other"]),
+                self._priv_result(
+                    ["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"],
+                    ok=False,
+                    code=32,
+                ),
+            ],
+        ):
+            result = self.service.mount_partition(
+                self._partition(status="Not mounted", status_detail="No active mountpoint.", can_mount=True, can_fix=False)
+            )
+
+        self.assertFalse(result.ok)
+        self.assertIn("Use Fix", result.message)
+
+    def test_mount_partition_uses_sda1_fallback_for_special_target(self) -> None:
+        with (
+            mock.patch(
+                "ubuntu_system_manager.services.partition_action_service.run_privileged_command",
+                side_effect=[
+                    self._priv_result(["pkexec", "mkdir", "-p", "/media/hamad/Other"]),
+                    self._priv_result(
+                        ["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda2", "/media/hamad/Other"],
+                        ok=False,
+                        code=32,
+                    ),
+                    self._priv_result(["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"]),
+                ],
+            ) as mock_priv,
+            mock.patch(
+                "ubuntu_system_manager.services.partition_action_service.run_command",
+                return_value=CommandResult(ok=True, stdout="/dev/sda1 /media/hamad/Other", stderr="", code=0),
+            ),
+        ):
+            result = self.service.mount_partition(
+                self._partition(
+                    device="/dev/sda2",
+                    status="Not mounted",
+                    status_detail="No active mountpoint.",
+                    can_mount=True,
+                    can_fix=False,
+                )
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(mock_priv.call_count, 3)
+        self.assertEqual(
+            mock_priv.call_args_list[1].args[0],
+            ["mount", "-t", "ntfs-3g", "/dev/sda2", "/media/hamad/Other"],
+        )
+        self.assertEqual(
+            mock_priv.call_args_list[2].args[0],
+            ["mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"],
+        )
 
 
 if __name__ == "__main__":
