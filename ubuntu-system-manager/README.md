@@ -13,19 +13,19 @@ Desktop app for Ubuntu (GTK4 + Libadwaita) to monitor and manage:
 This is the easiest method for someone installing from your public GitHub repo.
 
 1. Open your repository Releases page.
-2. Download the latest `.deb` file (example: `ubuntu-system-manager_0.4.1_amd64.deb`).
+2. Download the latest `.deb` file (example: `ubuntu-system-manager_0.4.2_amd64.deb`).
 3. Install and run:
 
 ```bash
 sudo apt update
-sudo apt install -y ./ubuntu-system-manager_0.4.1_amd64.deb
+sudo apt install -y ./ubuntu-system-manager_0.4.2_amd64.deb
 ubuntu-system-manager
 ```
 
 If the `.deb` is in another folder, use full path:
 
 ```bash
-sudo apt install -y /path/to/ubuntu-system-manager_0.4.1_amd64.deb
+sudo apt install -y /path/to/ubuntu-system-manager_0.4.2_amd64.deb
 ```
 
 ## Install Directly From GitHub Release URL
@@ -71,6 +71,7 @@ cd /media/hamad/Office/hamad/ubuntu-system-manager
 Output:
 
 - `dist/ubuntu-system-manager_0.4.1_amd64.deb` (architecture depends on build machine)
+  (The build script removes `dist/ubuntu-system-manager_*.deb` before packaging, so the folder only contains the latest artifact.)
 
 ## Publish A New Release (Maintainer)
 

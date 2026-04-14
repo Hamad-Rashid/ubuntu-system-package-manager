@@ -73,6 +73,7 @@ CONTROL
 chmod 0644 "${PKG_DIR}/DEBIAN/control"
 
 mkdir -p "${OUTPUT_DIR}"
+rm -f "${OUTPUT_DIR}/${PKG_NAME}_*.deb"
 DEB_PATH="${OUTPUT_DIR}/${PKG_NAME}_${VERSION}_${ARCH}.deb"
 dpkg-deb --build "${PKG_DIR}" "${DEB_PATH}"
 
