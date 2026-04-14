@@ -71,6 +71,10 @@ Install the generated package:
 sudo apt install ./dist/ubuntu-system-manager_0.4.0_$(dpkg --print-architecture).deb
 ```
 
+The package installs the app icon from:
+
+- `assets/icons/ubuntu-system-manager.svg`
+
 ## Docs
 
 - `docs/permissions-and-recovery.md`

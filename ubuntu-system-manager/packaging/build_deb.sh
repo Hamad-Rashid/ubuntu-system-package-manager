@@ -19,7 +19,8 @@ mkdir -p \
   "${PKG_DIR}/DEBIAN" \
   "${PKG_DIR}${APP_DIR}" \
   "${PKG_DIR}/usr/bin" \
-  "${PKG_DIR}/usr/share/applications"
+  "${PKG_DIR}/usr/share/applications" \
+  "${PKG_DIR}/usr/share/icons/hicolor/scalable/apps"
 
 cp -a \
   "${ROOT_DIR}/src" \
@@ -27,6 +28,11 @@ cp -a \
   "${ROOT_DIR}/requirements.txt" \
   "${ROOT_DIR}/README.md" \
   "${PKG_DIR}${APP_DIR}/"
+
+if [[ -f "${ROOT_DIR}/assets/icons/ubuntu-system-manager.svg" ]]; then
+  cp "${ROOT_DIR}/assets/icons/ubuntu-system-manager.svg" \
+    "${PKG_DIR}/usr/share/icons/hicolor/scalable/apps/ubuntu-system-manager.svg"
+fi
 
 cat > "${PKG_DIR}/usr/bin/ubuntu-system-manager" <<'LAUNCHER'
 #!/usr/bin/env bash
@@ -44,7 +50,7 @@ Type=Application
 Name=Ubuntu System Manager
 Comment=System packages, mounts, bluetooth and health actions
 Exec=ubuntu-system-manager
-Icon=utilities-system-monitor
+Icon=ubuntu-system-manager
 Terminal=false
 Categories=System;Utility;
 StartupNotify=true
