@@ -1,41 +1,50 @@
-# Ubuntu System Manager (Phase 4)
+# Ubuntu System Manager
 
-Ubuntu desktop system manager with GTK4 + Libadwaita for:
+Desktop app for Ubuntu (GTK4 + Libadwaita) to monitor and manage:
 
-- system metrics (RAM/storage)
-- package inventory and actions (APT + Snap)
+- RAM and storage usage
+- Installed packages (APT + Snap)
+- Package updates/remove/enable-disable (where supported)
 - Bluetooth/USB receiver visibility
-- partition mount/fix workflows
+- Partition mount and fix workflows
 
-## Features
+## Quick Start For Public Users
 
-- Package tabs:
-  - `All Installed`
-  - `Updates Available`
-  - `Snap`
-  - `APT`
-- Per-package actions:
-  - `Update`
-  - `Remove`
-  - `Enable/Disable` (Snap only)
-- `Update All` button for all available updates
-- Partition panel with contextual actions:
-  - mounted: no action
-  - unmounted: `Mount`
-  - mount/filesystem issue: `Fix`
-- Package and partition action logs with collapsible log sections
+This is the easiest method for someone installing from your public GitHub repo.
 
-## Phase 4 Hardening
+1. Open your repository Releases page.
+2. Download the latest `.deb` file (example: `ubuntu-system-manager_0.4.1_amd64.deb`).
+3. Install and run:
 
-- Retry handling for transient privileged command failures (lock/busy states)
-- Safer action input validation and clearer failure hints
-- Refresh watchdog to prevent UI lock on long refresh cycles
-- Partition scan hardening with bounded filesystem-check budget per refresh
-- Debian package build script and install flow
+```bash
+sudo apt update
+sudo apt install -y ./ubuntu-system-manager_0.4.1_amd64.deb
+ubuntu-system-manager
+```
 
-## Runtime Requirements
+If the `.deb` is in another folder, use full path:
 
-Install runtime dependencies:
+```bash
+sudo apt install -y /path/to/ubuntu-system-manager_0.4.1_amd64.deb
+```
+
+## Install Directly From GitHub Release URL
+
+Replace `<user>`, `<repo>`, and version/tag as needed.
+
+```bash
+wget -O /tmp/ubuntu-system-manager_0.4.1_amd64.deb \
+  https://github.com/<user>/<repo>/releases/download/v0.4.1/ubuntu-system-manager_0.4.1_amd64.deb
+
+sudo apt update
+sudo apt install -y /tmp/ubuntu-system-manager_0.4.1_amd64.deb
+ubuntu-system-manager
+```
+
+## Runtime Dependencies
+
+Most dependencies are installed automatically through the `.deb` package.  
+For source runs, install:
 
 ```bash
 sudo apt update
@@ -47,34 +56,48 @@ sudo apt install -y \
 ## Run From Source
 
 ```bash
-cd /media/hamad/Office/hamad/ubuntu-system-manager
+git clone https://github.com/<user>/<repo>.git
+cd <repo>/ubuntu-system-manager
 ./run.sh
 ```
 
-## Tests
+## Build `.deb` (Maintainer)
 
 ```bash
 cd /media/hamad/Office/hamad/ubuntu-system-manager
-python3 -m unittest discover -s tests -v
+./packaging/build_deb.sh 0.4.1
 ```
 
-## Build `.deb`
+Output:
+
+- `dist/ubuntu-system-manager_0.4.1_amd64.deb` (architecture depends on build machine)
+
+## Publish A New Release (Maintainer)
+
+1. Build package: `./packaging/build_deb.sh <version>`
+2. Create Git tag: `v<version>`
+3. Create GitHub Release for that tag
+4. Upload `.deb` file from `dist/`
+5. Share release URL with users
+
+## Uninstall
 
 ```bash
-cd /media/hamad/Office/hamad/ubuntu-system-manager
-./packaging/build_deb.sh 0.4.0
+sudo apt remove -y ubuntu-system-manager
 ```
 
-Install the generated package:
+## Troubleshooting
 
-```bash
-sudo apt install ./dist/ubuntu-system-manager_0.4.0_$(dpkg --print-architecture).deb
-```
+- Warning: `Download is performed unsandboxed as root...`
+  - This is usually harmless for local-path installs from restricted folders (like `/media/...`).
+  - To avoid it, copy `.deb` to `/tmp` before install.
 
-The package installs the app icon from:
+- App icon not updated immediately:
+  - Log out and log back in, or reboot once.
 
-- `assets/icons/ubuntu-system-manager.svg`
+- Missing dependencies after manual `dpkg -i`:
+  - Run `sudo apt -f install -y`
 
-## Docs
+## Extra Docs
 
 - `docs/permissions-and-recovery.md`
