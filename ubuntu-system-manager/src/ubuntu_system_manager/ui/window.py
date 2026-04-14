@@ -364,24 +364,28 @@ class MainWindow(Adw.ApplicationWindow):
             packages,
             empty_message="No packages found or package tools unavailable.",
             generation=render_generation,
+            tab_name="all",
         )
         self._rebuild_package_list_async(
             self.package_updates_listbox,
             updatable_packages,
             empty_message="No updates available.",
             generation=render_generation,
+            tab_name="updates",
         )
         self._rebuild_package_list_async(
             self.package_snap_listbox,
             snap_packages,
             empty_message="No snap packages installed.",
             generation=render_generation,
+            tab_name="snap",
         )
         self._rebuild_package_list_async(
             self.package_apt_listbox,
             apt_packages,
             empty_message="No apt packages installed.",
             generation=render_generation,
+            tab_name="apt",
         )
 
         bt_count = len([device for device in bluetooth_devices if device.connected])
@@ -444,6 +448,7 @@ class MainWindow(Adw.ApplicationWindow):
         *,
         empty_message: str,
         generation: int,
+        tab_name: str,
     ) -> None:
         self._clear_listbox(listbox)
 
@@ -467,7 +472,7 @@ class MainWindow(Adw.ApplicationWindow):
                 return False
             end = min(index + chunk_size, len(items))
             for package in items[index:end]:
-                listbox.append(self._build_package_row(package))
+                listbox.append(self._build_package_row(package, tab_name=tab_name))
             index = end
             return index < len(items)
 
@@ -480,7 +485,7 @@ class MainWindow(Adw.ApplicationWindow):
             listbox.remove(child)
             child = next_child
 
-    def _build_package_row(self, package: PackageEntry) -> Gtk.ListBoxRow:
+    def _build_package_row(self, package: PackageEntry, *, tab_name: str) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()
         row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         row_box.set_margin_top(6)
@@ -511,27 +516,31 @@ class MainWindow(Adw.ApplicationWindow):
         meta.set_wrap(True)
         details_box.append(meta)
 
+        if tab_name == "all":
+            return row
+
         action_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         row_box.append(action_box)
-
-        update_btn = Gtk.Button(label="Update")
-        update_btn.set_sensitive(package.update_available)
-        if not package.update_available:
-            update_btn.set_tooltip_text("No update available.")
-        update_btn.connect("clicked", self._on_package_update_clicked, package)
-        action_box.append(update_btn)
 
         remove_btn = Gtk.Button(label="Remove")
         remove_btn.connect("clicked", self._on_package_remove_clicked, package)
         action_box.append(remove_btn)
 
-        toggle_label = "Disable" if package.enabled else "Enable"
-        toggle_btn = Gtk.Button(label=toggle_label)
-        toggle_btn.set_sensitive(package.can_toggle)
-        if not package.can_toggle:
+        if package.update_available:
+            update_btn = Gtk.Button(label="Update")
+            update_btn.connect("clicked", self._on_package_update_clicked, package)
+            action_box.append(update_btn)
+
+        if package.can_toggle:
+            toggle_label = "Disable" if package.enabled else "Enable"
+            toggle_btn = Gtk.Button(label=toggle_label)
+            toggle_btn.connect("clicked", self._on_package_toggle_clicked, package)
+            action_box.append(toggle_btn)
+        elif tab_name != "apt":
+            toggle_btn = Gtk.Button(label="Enable/Disable")
+            toggle_btn.set_sensitive(False)
             toggle_btn.set_tooltip_text("Enable/Disable is only supported for snap packages.")
-        toggle_btn.connect("clicked", self._on_package_toggle_clicked, package)
-        action_box.append(toggle_btn)
+            action_box.append(toggle_btn)
 
         return row
 
