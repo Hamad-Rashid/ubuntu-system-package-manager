@@ -42,6 +42,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._refresh_inflight = False
         self._operation_inflight = False
         self._packages: list[PackageEntry] = []
+        self._package_render_generation = 0
         self._package_log_lines: list[str] = []
 
         self._build_ui()
@@ -233,30 +234,18 @@ class MainWindow(Adw.ApplicationWindow):
             "errors": [],
             "collected_at": datetime.now(),
         }
-        try:
-            snapshot["metrics"] = self._system_service.collect()
-        except Exception as exc:  # noqa: BLE001
-            snapshot["errors"].append(f"system metrics: {exc}")
-
-        try:
-            snapshot["packages"] = self._package_service.collect()
-        except Exception as exc:  # noqa: BLE001
-            snapshot["errors"].append(f"packages: {exc}")
-
-        try:
-            snapshot["bluetooth_status"] = self._bluetooth_service.adapter_status()
-        except Exception as exc:  # noqa: BLE001
-            snapshot["errors"].append(f"bluetooth status: {exc}")
-
-        try:
-            snapshot["bluetooth_devices"] = self._bluetooth_service.collect()
-        except Exception as exc:  # noqa: BLE001
-            snapshot["errors"].append(f"bluetooth: {exc}")
-
-        try:
-            snapshot["partitions"] = self._partition_service.collect()
-        except Exception as exc:  # noqa: BLE001
-            snapshot["errors"].append(f"partitions: {exc}")
+        jobs: dict[str, Future[Any]] = {
+            "metrics": self._executor.submit(self._system_service.collect),
+            "packages": self._executor.submit(self._package_service.collect),
+            "bluetooth_status": self._executor.submit(self._bluetooth_service.adapter_status),
+            "bluetooth_devices": self._executor.submit(self._bluetooth_service.collect),
+            "partitions": self._executor.submit(self._partition_service.collect),
+        }
+        for key, future in jobs.items():
+            try:
+                snapshot[key] = future.result()
+            except Exception as exc:  # noqa: BLE001
+                snapshot["errors"].append(f"{key.replace('_', ' ')}: {exc}")
 
         return snapshot
 
@@ -293,15 +282,19 @@ class MainWindow(Adw.ApplicationWindow):
         self.package_summary_label.set_text(
             f"Installed packages: {len(packages)} | Updates available: {len(updatable_packages)}"
         )
-        self._rebuild_package_list(
+        self._package_render_generation += 1
+        render_generation = self._package_render_generation
+        self._rebuild_package_list_async(
             self.package_all_listbox,
             packages,
             empty_message="No packages found or package tools unavailable.",
+            generation=render_generation,
         )
-        self._rebuild_package_list(
+        self._rebuild_package_list_async(
             self.package_updates_listbox,
             updatable_packages,
             empty_message="No updates available.",
+            generation=render_generation,
         )
 
         bt_count = len([device for device in bluetooth_devices if device.connected])
@@ -326,7 +319,14 @@ class MainWindow(Adw.ApplicationWindow):
         self._update_controls_state()
         return False
 
-    def _rebuild_package_list(self, listbox: Gtk.ListBox, items: list[PackageEntry], *, empty_message: str) -> None:
+    def _rebuild_package_list_async(
+        self,
+        listbox: Gtk.ListBox,
+        items: list[PackageEntry],
+        *,
+        empty_message: str,
+        generation: int,
+    ) -> None:
         self._clear_listbox(listbox)
 
         if not items:
@@ -340,8 +340,20 @@ class MainWindow(Adw.ApplicationWindow):
             listbox.append(empty_row)
             return
 
-        for package in items:
-            listbox.append(self._build_package_row(package))
+        index = 0
+        chunk_size = 25
+
+        def _append_chunk() -> bool:
+            nonlocal index
+            if generation != self._package_render_generation:
+                return False
+            end = min(index + chunk_size, len(items))
+            for package in items[index:end]:
+                listbox.append(self._build_package_row(package))
+            index = end
+            return index < len(items)
+
+        GLib.idle_add(_append_chunk, priority=GLib.PRIORITY_LOW)
 
     def _clear_listbox(self, listbox: Gtk.ListBox) -> None:
         child = listbox.get_first_child()
