@@ -86,6 +86,13 @@ Output:
 sudo apt remove -y ubuntu-system-manager
 ```
 
+To clean up configs/leftovers before reinstalling, run:
+
+```bash
+sudo apt purge -y ubuntu-system-manager
+sudo apt autoremove -y
+```
+
 ## Troubleshooting
 
 - Warning: `Download is performed unsandboxed as root...`
