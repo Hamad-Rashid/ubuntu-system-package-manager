@@ -398,7 +398,19 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_package_update_clicked(self, _button: Gtk.Button, package: PackageEntry) -> None:
         if not package.update_available:
             return
-        self._run_package_action("update", package)
+        heading = f"Update package '{package.name}'?"
+        body = (
+            f"This will update the {package.source} package '{package.name}' "
+            "using administrator privileges."
+        )
+        self._confirm_package_action(
+            heading=heading,
+            body=body,
+            confirm_label="Update",
+            destructive=False,
+            action="update",
+            package=package,
+        )
 
     def _on_package_remove_clicked(self, _button: Gtk.Button, package: PackageEntry) -> None:
         heading = f"Remove package '{package.name}'?"
@@ -484,7 +496,7 @@ class MainWindow(Adw.ApplicationWindow):
                 source=package.source,
                 enabled=package.enabled,
             )
-        return PackageActionResult(False, 1, f"Unsupported action: {action}", "", "")
+        return PackageActionResult(False, 1, f"Unsupported action: {action}", "", "", [], 0.0, 0.0)
 
     def _on_package_action_done(self, future: Future[PackageActionResult], action: str, pkg_name: str) -> bool:
         try:
@@ -502,6 +514,12 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self._append_package_log(f"FAILED: {result.message} (exit {result.code})")
             self.status_label.set_text(f"Failed: {result.message}")
+
+        if result.command:
+            self._append_package_log("command: " + " ".join(result.command))
+        self._append_package_log(
+            f"timing: queue={result.queue_wait_seconds:.2f}s exec={result.execution_seconds:.2f}s"
+        )
 
         if result.stdout:
             self._append_package_log(f"stdout: {result.stdout[-1200:]}")

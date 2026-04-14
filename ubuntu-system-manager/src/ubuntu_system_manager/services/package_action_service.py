@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .command_runner import run_command
+from .command_runner import run_privileged_command
 
 
 @dataclass(slots=True)
@@ -12,41 +12,102 @@ class PackageActionResult:
     message: str
     stdout: str
     stderr: str
+    command: list[str]
+    queue_wait_seconds: float
+    execution_seconds: float
 
 
 class PackageActionService:
     def update_package(self, *, name: str, source: str) -> PackageActionResult:
         if source == "apt":
-            cmd = ["pkexec", "apt-get", "install", "--only-upgrade", "-y", name]
-            result = run_command(cmd, timeout=2400)
+            cmd = ["apt-get", "install", "--only-upgrade", "-y", name]
+            result = run_privileged_command(cmd, timeout=2400)
             message = f"Update {name} (apt)"
-            return PackageActionResult(result.ok, result.code, message, result.stdout, result.stderr)
+            return PackageActionResult(
+                result.ok,
+                result.code,
+                message,
+                result.stdout,
+                result.stderr,
+                result.command,
+                result.queue_wait_seconds,
+                result.execution_seconds,
+            )
         if source == "snap":
-            cmd = ["pkexec", "snap", "refresh", name]
-            result = run_command(cmd, timeout=2400)
+            cmd = ["snap", "refresh", name]
+            result = run_privileged_command(cmd, timeout=2400)
             message = f"Update {name} (snap)"
-            return PackageActionResult(result.ok, result.code, message, result.stdout, result.stderr)
-        return PackageActionResult(False, 1, f"Unsupported source for update: {source}", "", "")
+            return PackageActionResult(
+                result.ok,
+                result.code,
+                message,
+                result.stdout,
+                result.stderr,
+                result.command,
+                result.queue_wait_seconds,
+                result.execution_seconds,
+            )
+        return PackageActionResult(
+            False, 1, f"Unsupported source for update: {source}", "", "", [], 0.0, 0.0
+        )
 
     def remove_package(self, *, name: str, source: str) -> PackageActionResult:
         if source == "apt":
-            cmd = ["pkexec", "apt-get", "remove", "-y", name]
-            result = run_command(cmd, timeout=2400)
+            cmd = ["apt-get", "remove", "-y", name]
+            result = run_privileged_command(cmd, timeout=2400)
             message = f"Remove {name} (apt)"
-            return PackageActionResult(result.ok, result.code, message, result.stdout, result.stderr)
+            return PackageActionResult(
+                result.ok,
+                result.code,
+                message,
+                result.stdout,
+                result.stderr,
+                result.command,
+                result.queue_wait_seconds,
+                result.execution_seconds,
+            )
         if source == "snap":
-            cmd = ["pkexec", "snap", "remove", name]
-            result = run_command(cmd, timeout=2400)
+            cmd = ["snap", "remove", name]
+            result = run_privileged_command(cmd, timeout=2400)
             message = f"Remove {name} (snap)"
-            return PackageActionResult(result.ok, result.code, message, result.stdout, result.stderr)
-        return PackageActionResult(False, 1, f"Unsupported source for remove: {source}", "", "")
+            return PackageActionResult(
+                result.ok,
+                result.code,
+                message,
+                result.stdout,
+                result.stderr,
+                result.command,
+                result.queue_wait_seconds,
+                result.execution_seconds,
+            )
+        return PackageActionResult(
+            False, 1, f"Unsupported source for remove: {source}", "", "", [], 0.0, 0.0
+        )
 
     def toggle_package(self, *, name: str, source: str, enabled: bool) -> PackageActionResult:
         if source != "snap":
-            return PackageActionResult(False, 1, f"Enable/Disable unsupported for source: {source}", "", "")
+            return PackageActionResult(
+                False,
+                1,
+                f"Enable/Disable unsupported for source: {source}",
+                "",
+                "",
+                [],
+                0.0,
+                0.0,
+            )
 
         action = "disable" if enabled else "enable"
-        cmd = ["pkexec", "snap", action, name]
-        result = run_command(cmd, timeout=1200)
+        cmd = ["snap", action, name]
+        result = run_privileged_command(cmd, timeout=1200)
         message = f"{action.capitalize()} {name} (snap)"
-        return PackageActionResult(result.ok, result.code, message, result.stdout, result.stderr)
+        return PackageActionResult(
+            result.ok,
+            result.code,
+            message,
+            result.stdout,
+            result.stderr,
+            result.command,
+            result.queue_wait_seconds,
+            result.execution_seconds,
+        )

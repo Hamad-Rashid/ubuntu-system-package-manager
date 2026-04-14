@@ -37,7 +37,7 @@ cd /media/hamad/Office/hamad/ubuntu-system-manager
 ## Notes
 
 - Data is refreshed at startup and every 60 seconds, with manual refresh support.
-- Package update/remove/enable-disable actions run with `pkexec` and will request admin authentication.
-- Only one package operation is executed at a time.
+- Package update/remove/enable-disable actions run through a central privileged runner (`pkexec`) and will request admin authentication.
+- Privileged operations are serialized to avoid package manager lock conflicts.
 - `Enable/Disable` is supported for Snap packages; APT packages show this as unsupported.
 - Some Bluetooth devices do not expose battery percentage.
