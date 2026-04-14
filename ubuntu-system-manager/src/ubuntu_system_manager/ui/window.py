@@ -41,6 +41,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="phase2-worker")
         self._refresh_inflight = False
         self._operation_inflight = False
+        self._packages: list[PackageEntry] = []
         self._package_log_lines: list[str] = []
 
         self._build_ui()
@@ -157,8 +158,16 @@ class MainWindow(Adw.ApplicationWindow):
         box.set_margin_end(10)
         frame.set_child(box)
 
+        summary_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.append(summary_row)
+
         summary = Gtk.Label(label="-", xalign=0)
-        box.append(summary)
+        summary.set_hexpand(True)
+        summary_row.append(summary)
+
+        self.update_all_button = Gtk.Button(label="Update All")
+        self.update_all_button.connect("clicked", self._on_update_all_clicked)
+        summary_row.append(self.update_all_button)
 
         notebook = Gtk.Notebook()
         notebook.set_hexpand(True)
@@ -280,6 +289,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.used_storage_label.set_text("N/A")
 
         updatable_packages = [item for item in packages if item.update_available]
+        self._packages = packages
         self.package_summary_label.set_text(
             f"Installed packages: {len(packages)} | Updates available: {len(updatable_packages)}"
         )
@@ -412,6 +422,37 @@ class MainWindow(Adw.ApplicationWindow):
             package=package,
         )
 
+    def _on_update_all_clicked(self, _button: Gtk.Button) -> None:
+        updatable_packages = [item for item in self._packages if item.update_available]
+        if not updatable_packages:
+            self.status_label.set_text("No updates are currently available.")
+            return
+
+        apt_count = len([item for item in updatable_packages if item.source == "apt"])
+        snap_count = len([item for item in updatable_packages if item.source == "snap"])
+        total_count = len(updatable_packages)
+
+        heading = f"Update all available packages ({total_count})?"
+        body = (
+            "This will run package updates with administrator privileges.\n"
+            f"APT: {apt_count} package(s)\n"
+            f"Snap: {snap_count} package(s)"
+        )
+        dialog = Adw.MessageDialog.new(self, heading, body)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("confirm", "Update All")
+        dialog.set_response_appearance("confirm", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def _on_response(_dlg: Adw.MessageDialog, response: str) -> None:
+            if response == "confirm":
+                self._run_update_all_action(updatable_packages)
+            dialog.close()
+
+        dialog.connect("response", _on_response)
+        dialog.present()
+
     def _on_package_remove_clicked(self, _button: Gtk.Button, package: PackageEntry) -> None:
         heading = f"Remove package '{package.name}'?"
         body = f"This will remove the {package.source} package '{package.name}'."
@@ -485,6 +526,24 @@ class MainWindow(Adw.ApplicationWindow):
             )
         )
 
+    def _run_update_all_action(self, packages: list[PackageEntry]) -> None:
+        if self._operation_inflight:
+            self.status_label.set_text("Another package operation is already running.")
+            return
+
+        self._operation_inflight = True
+        self._update_controls_state()
+        self._append_package_log(f"Running action: update-all ({len(packages)} package(s))")
+        self.status_label.set_text(f"Running update-all for {len(packages)} package(s)...")
+
+        apt_names = [item.name for item in packages if item.source == "apt"]
+        snap_names = [item.name for item in packages if item.source == "snap"]
+
+        future = self._executor.submit(self._execute_update_all_action, apt_names, snap_names)
+        future.add_done_callback(
+            lambda fut, total=len(packages): GLib.idle_add(self._on_update_all_done, fut, total)
+        )
+
     def _execute_package_action(self, action: str, package: PackageEntry) -> PackageActionResult:
         if action == "update":
             return self._package_action_service.update_package(name=package.name, source=package.source)
@@ -497,6 +556,57 @@ class MainWindow(Adw.ApplicationWindow):
                 enabled=package.enabled,
             )
         return PackageActionResult(False, 1, f"Unsupported action: {action}", "", "", [], 0.0, 0.0)
+
+    def _execute_update_all_action(self, apt_names: list[str], snap_names: list[str]) -> list[PackageActionResult]:
+        return self._package_action_service.update_all_packages(apt_names=apt_names, snap_names=snap_names)
+
+    def _on_update_all_done(self, future: Future[list[PackageActionResult]], total_count: int) -> bool:
+        try:
+            results = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self._append_package_log(f"Action failed unexpectedly: update-all | {exc}")
+            self.status_label.set_text(f"Update-all failed: {exc}")
+            self._operation_inflight = False
+            self._update_controls_state()
+            return False
+
+        if not results:
+            self._append_package_log("FAILED: Update-all had no runnable package sources.")
+            self.status_label.set_text("Update-all failed: no supported package sources were found.")
+            self._operation_inflight = False
+            self._update_controls_state()
+            return False
+
+        success_count = 0
+        for result in results:
+            if result.ok:
+                success_count += 1
+                self._append_package_log(f"SUCCESS: {result.message}")
+            else:
+                self._append_package_log(f"FAILED: {result.message} (exit {result.code})")
+
+            if result.command:
+                self._append_package_log("command: " + " ".join(result.command))
+            self._append_package_log(
+                f"timing: queue={result.queue_wait_seconds:.2f}s exec={result.execution_seconds:.2f}s"
+            )
+            if result.stdout:
+                self._append_package_log(f"stdout: {result.stdout[-1200:]}")
+            if result.stderr:
+                self._append_package_log(f"stderr: {result.stderr[-1200:]}")
+
+        if success_count == len(results):
+            self.status_label.set_text(f"Success: update-all completed for {total_count} package(s).")
+        else:
+            failed_count = len(results) - success_count
+            self.status_label.set_text(
+                f"Update-all completed with errors ({failed_count}/{len(results)} command(s) failed)."
+            )
+
+        self._operation_inflight = False
+        self._update_controls_state()
+        self._start_refresh(reason="post-action")
+        return False
 
     def _on_package_action_done(self, future: Future[PackageActionResult], action: str, pkg_name: str) -> bool:
         try:
@@ -543,6 +653,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.refresh_button.set_sensitive(refresh_sensitive)
         package_panel_sensitive = not self._refresh_inflight and not self._operation_inflight
         self.package_notebook.set_sensitive(package_panel_sensitive)
+        has_updates = any(item.update_available for item in self._packages)
+        self.update_all_button.set_sensitive(package_panel_sensitive and has_updates)
+        if has_updates:
+            self.update_all_button.set_tooltip_text("Update all currently upgradable packages.")
+        else:
+            self.update_all_button.set_tooltip_text("No updates available.")
 
     def _set_textview_content(self, text_view: Gtk.TextView, content: str) -> None:
         buffer = text_view.get_buffer()

@@ -18,6 +18,47 @@ class PackageActionResult:
 
 
 class PackageActionService:
+    def update_all_packages(self, *, apt_names: list[str], snap_names: list[str]) -> list[PackageActionResult]:
+        results: list[PackageActionResult] = []
+
+        normalized_apt = sorted({name for name in apt_names if name})
+        if normalized_apt:
+            cmd = ["apt-get", "install", "--only-upgrade", "-y", *normalized_apt]
+            result = run_privileged_command(cmd, timeout=3600)
+            message = f"Update all apt packages ({len(normalized_apt)})"
+            results.append(
+                PackageActionResult(
+                    result.ok,
+                    result.code,
+                    message,
+                    result.stdout,
+                    result.stderr,
+                    result.command,
+                    result.queue_wait_seconds,
+                    result.execution_seconds,
+                )
+            )
+
+        normalized_snap = sorted({name for name in snap_names if name})
+        if normalized_snap:
+            cmd = ["snap", "refresh", *normalized_snap]
+            result = run_privileged_command(cmd, timeout=3600)
+            message = f"Update all snap packages ({len(normalized_snap)})"
+            results.append(
+                PackageActionResult(
+                    result.ok,
+                    result.code,
+                    message,
+                    result.stdout,
+                    result.stderr,
+                    result.command,
+                    result.queue_wait_seconds,
+                    result.execution_seconds,
+                )
+            )
+
+        return results
+
     def update_package(self, *, name: str, source: str) -> PackageActionResult:
         if source == "apt":
             cmd = ["apt-get", "install", "--only-upgrade", "-y", name]

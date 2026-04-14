@@ -10,6 +10,8 @@ Current implementation of the planned Ubuntu desktop app:
   - `Update`
   - `Remove`
   - `Enable/Disable` (Snap packages)
+- Bulk action:
+  - `Update All` for all currently upgradable packages
 - Package action log in UI
 - Bluetooth/USB device panel with battery percentage (if available)
 - Partition health list (mounted/not mounted/mount error)
@@ -39,5 +41,6 @@ cd /media/hamad/Office/hamad/ubuntu-system-manager
 - Data is refreshed at startup and every 60 seconds, with manual refresh support.
 - Package update/remove/enable-disable actions run through a central privileged runner (`pkexec`) and will request admin authentication.
 - Privileged operations are serialized to avoid package manager lock conflicts.
+- `Update All` runs grouped APT and Snap updates from a single click.
 - `Enable/Disable` is supported for Snap packages; APT packages show this as unsupported.
 - Some Bluetooth devices do not expose battery percentage.
