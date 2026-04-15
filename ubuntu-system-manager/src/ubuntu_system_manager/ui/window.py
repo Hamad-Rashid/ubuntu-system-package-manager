@@ -48,6 +48,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._operation_inflight = False
         self._refresh_generation = 0
         self._packages: list[PackageEntry] = []
+        self._package_search_query = ""
+        self._package_status_filter = "all"
         self._package_render_generation = 0
         self._partitions: list[PartitionEntry] = []
         self._partition_mount_failures: dict[str, str] = {}
@@ -77,8 +79,19 @@ class MainWindow(Adw.ApplicationWindow):
         root.set_margin_end(12)
         toolbar_view.set_content(root)
 
+        status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        root.append(status_row)
+
         self.status_label = Gtk.Label(label="Waiting for first refresh...", xalign=0)
-        root.append(self.status_label)
+        self.status_label.set_hexpand(True)
+        status_row.append(self.status_label)
+
+        self.activity_label = Gtk.Label(label="Idle", xalign=1)
+        self.activity_label.add_css_class("dim-label")
+        status_row.append(self.activity_label)
+
+        self.activity_spinner = Gtk.Spinner()
+        status_row.append(self.activity_spinner)
 
         metrics_frame = Gtk.Frame(label="System Metrics")
         root.append(metrics_frame)
@@ -279,6 +292,29 @@ class MainWindow(Adw.ApplicationWindow):
         self.clear_cache_button.connect("clicked", self._on_clear_all_cache_clicked)
         summary_row.append(self.clear_cache_button)
 
+        self.package_controls_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.append(self.package_controls_row)
+
+        self.package_search_entry = Gtk.SearchEntry()
+        self.package_search_entry.set_placeholder_text("Search package name or version...")
+        self.package_search_entry.set_hexpand(True)
+        self.package_search_entry.connect("search-changed", self._on_package_search_changed)
+        self.package_controls_row.append(self.package_search_entry)
+
+        status_filter_model = Gtk.StringList.new(
+            [
+                "All statuses",
+                "Update available",
+                "Up-to-date",
+                "Disabled",
+            ]
+        )
+        self.package_status_filter_dropdown = Gtk.DropDown.new(status_filter_model, None)
+        self.package_status_filter_dropdown.set_selected(0)
+        self.package_status_filter_dropdown.connect("notify::selected", self._on_package_status_filter_changed)
+        self.package_status_filter_dropdown.set_tooltip_text("Filter package list by status.")
+        self.package_controls_row.append(self.package_status_filter_dropdown)
+
         notebook = Gtk.Notebook()
         notebook.set_hexpand(True)
         notebook.set_vexpand(True)
@@ -467,42 +503,8 @@ class MainWindow(Adw.ApplicationWindow):
             self.used_storage_label.set_text("N/A")
 
         updatable_packages = [item for item in packages if item.update_available]
-        snap_packages = [item for item in packages if item.source == "snap"]
-        apt_packages = [item for item in packages if item.source == "apt"]
         self._packages = packages
-        self.package_summary_label.set_text(
-            f"Installed packages: {len(packages)} | Updates available: {len(updatable_packages)}"
-        )
-        self._package_render_generation += 1
-        render_generation = self._package_render_generation
-        self._rebuild_package_list_async(
-            self.package_all_listbox,
-            packages,
-            empty_message="No packages found or package tools unavailable.",
-            generation=render_generation,
-            tab_name="all",
-        )
-        self._rebuild_package_list_async(
-            self.package_updates_listbox,
-            updatable_packages,
-            empty_message="No updates available.",
-            generation=render_generation,
-            tab_name="updates",
-        )
-        self._rebuild_package_list_async(
-            self.package_snap_listbox,
-            snap_packages,
-            empty_message="No snap packages installed.",
-            generation=render_generation,
-            tab_name="snap",
-        )
-        self._rebuild_package_list_async(
-            self.package_apt_listbox,
-            apt_packages,
-            empty_message="No apt packages installed.",
-            generation=render_generation,
-            tab_name="apt",
-        )
+        self._refresh_package_views(packages=packages, updates_count=len(updatable_packages))
 
         bt_count = len([device for device in bluetooth_devices if device.connected])
         self.bluetooth_summary_label.set_text(f"{bluetooth_status} | Connected Bluetooth/USB devices: {bt_count}")
@@ -594,6 +596,93 @@ class MainWindow(Adw.ApplicationWindow):
 
         GLib.idle_add(_append_chunk, priority=GLib.PRIORITY_LOW)
 
+    def _refresh_package_views(self, *, packages: list[PackageEntry], updates_count: int) -> None:
+        filtered_all = self._apply_package_filters(packages)
+        filtered_updates = self._apply_package_filters([item for item in packages if item.update_available])
+        filtered_snap = self._apply_package_filters([item for item in packages if item.source == "snap"])
+        filtered_apt = self._apply_package_filters([item for item in packages if item.source == "apt"])
+
+        self.package_summary_label.set_text(
+            (
+                f"Installed packages: {len(packages)} | "
+                f"Updates available: {updates_count} | "
+                f"Showing: {len(filtered_all)}"
+            )
+        )
+
+        self._package_render_generation += 1
+        render_generation = self._package_render_generation
+        self._rebuild_package_list_async(
+            self.package_all_listbox,
+            filtered_all,
+            empty_message="No packages found for current filter.",
+            generation=render_generation,
+            tab_name="all",
+        )
+        self._rebuild_package_list_async(
+            self.package_updates_listbox,
+            filtered_updates,
+            empty_message="No update entries match current filter.",
+            generation=render_generation,
+            tab_name="updates",
+        )
+        self._rebuild_package_list_async(
+            self.package_snap_listbox,
+            filtered_snap,
+            empty_message="No snap packages match current filter.",
+            generation=render_generation,
+            tab_name="snap",
+        )
+        self._rebuild_package_list_async(
+            self.package_apt_listbox,
+            filtered_apt,
+            empty_message="No apt packages match current filter.",
+            generation=render_generation,
+            tab_name="apt",
+        )
+
+    def _apply_package_filters(self, items: list[PackageEntry]) -> list[PackageEntry]:
+        query = self._package_search_query.strip().lower()
+        filtered = items
+        if query:
+            filtered = [
+                item
+                for item in filtered
+                if query in item.name.lower()
+                or query in item.installed_version.lower()
+                or query in item.latest_version.lower()
+            ]
+
+        if self._package_status_filter == "updates":
+            filtered = [item for item in filtered if item.update_available]
+        elif self._package_status_filter == "up_to_date":
+            filtered = [item for item in filtered if item.status == "Up-to-date"]
+        elif self._package_status_filter == "disabled":
+            filtered = [item for item in filtered if item.status == "Disabled"]
+        return filtered
+
+    def _on_package_search_changed(self, entry: Gtk.SearchEntry) -> None:
+        self._package_search_query = entry.get_text() or ""
+        self._refresh_package_views(
+            packages=self._packages,
+            updates_count=len([item for item in self._packages if item.update_available]),
+        )
+
+    def _on_package_status_filter_changed(self, dropdown: Gtk.DropDown, _pspec: object) -> None:
+        selected = dropdown.get_selected()
+        if selected == 1:
+            self._package_status_filter = "updates"
+        elif selected == 2:
+            self._package_status_filter = "up_to_date"
+        elif selected == 3:
+            self._package_status_filter = "disabled"
+        else:
+            self._package_status_filter = "all"
+        self._refresh_package_views(
+            packages=self._packages,
+            updates_count=len([item for item in self._packages if item.update_available]),
+        )
+
     def _clear_listbox(self, listbox: Gtk.ListBox) -> None:
         child = listbox.get_first_child()
         while child is not None:
@@ -639,17 +728,20 @@ class MainWindow(Adw.ApplicationWindow):
         row_box.append(action_box)
 
         remove_btn = Gtk.Button(label="Remove")
+        remove_btn.set_tooltip_text("Remove this package.")
         remove_btn.connect("clicked", self._on_package_remove_clicked, package)
         action_box.append(remove_btn)
 
         if package.update_available:
             update_btn = Gtk.Button(label="Update")
+            update_btn.set_tooltip_text("Update this package now.")
             update_btn.connect("clicked", self._on_package_update_clicked, package)
             action_box.append(update_btn)
 
         if package.can_toggle:
             toggle_label = "Disable" if package.enabled else "Enable"
             toggle_btn = Gtk.Button(label=toggle_label)
+            toggle_btn.set_tooltip_text(f"{toggle_label} this snap package.")
             toggle_btn.connect("clicked", self._on_package_toggle_clicked, package)
             action_box.append(toggle_btn)
         elif tab_name != "apt":
@@ -1222,6 +1314,7 @@ class MainWindow(Adw.ApplicationWindow):
         panel_sensitive = not self._refresh_inflight and not self._operation_inflight
         package_panel_sensitive = panel_sensitive
         self.package_notebook.set_sensitive(package_panel_sensitive)
+        self.package_controls_row.set_sensitive(package_panel_sensitive)
         self.partition_listbox.set_sensitive(panel_sensitive)
         has_updates = any(item.update_available for item in self._packages)
         self.update_all_button.set_sensitive(package_panel_sensitive and has_updates)
@@ -1231,6 +1324,16 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self.update_all_button.set_tooltip_text("No updates available.")
         self.clear_cache_button.set_tooltip_text("Clear all APT and Snap cache data.")
+
+        if self._refresh_inflight:
+            self.activity_label.set_text("Refreshing")
+            self.activity_spinner.start()
+        elif self._operation_inflight:
+            self.activity_label.set_text("Running action")
+            self.activity_spinner.start()
+        else:
+            self.activity_label.set_text("Idle")
+            self.activity_spinner.stop()
 
     def _set_textview_content(self, text_view: Gtk.TextView, content: str) -> None:
         buffer = text_view.get_buffer()
