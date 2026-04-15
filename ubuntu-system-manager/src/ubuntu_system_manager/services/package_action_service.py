@@ -99,6 +99,30 @@ class PackageActionService:
 
         return results
 
+    def clear_all_cache(self) -> list[PackageActionResult]:
+        steps: list[tuple[str, list[str], int]] = [
+            ("APT cache clean", ["apt-get", "clean"], 1200),
+            ("APT cache autoclean", ["apt-get", "autoclean"], 1200),
+            ("Remove APT package lists", ["rm", "-rf", "/var/lib/apt/lists"], 600),
+            ("Recreate APT package list directory", ["mkdir", "-p", "/var/lib/apt/lists/partial"], 600),
+            ("Remove Snap cache", ["rm", "-rf", "/var/lib/snapd/cache"], 600),
+            ("Recreate Snap cache directory", ["mkdir", "-p", "/var/lib/snapd/cache"], 600),
+            ("Remove Snap system cache", ["rm", "-rf", "/var/cache/snapd"], 600),
+            ("Recreate Snap system cache directory", ["mkdir", "-p", "/var/cache/snapd"], 600),
+        ]
+        results: list[PackageActionResult] = []
+        for message, command, timeout in steps:
+            result = self._execute_action(
+                cmd=command,
+                timeout=timeout,
+                message=message,
+                retry_attempts=1,
+            )
+            results.append(result)
+            if not result.ok:
+                break
+        return results
+
     def update_package(self, *, name: str, source: str) -> PackageActionResult:
         normalized_source = self._normalize_source(source)
         package_name = (name or "").strip()

@@ -274,6 +274,11 @@ class MainWindow(Adw.ApplicationWindow):
         self.update_all_button.connect("clicked", self._on_update_all_clicked)
         summary_row.append(self.update_all_button)
 
+        self.clear_cache_button = Gtk.Button(label="Clear All Cache")
+        self.clear_cache_button.add_css_class("destructive-action")
+        self.clear_cache_button.connect("clicked", self._on_clear_all_cache_clicked)
+        summary_row.append(self.clear_cache_button)
+
         notebook = Gtk.Notebook()
         notebook.set_hexpand(True)
         notebook.set_vexpand(True)
@@ -767,6 +772,27 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.connect("response", _on_response)
         dialog.present()
 
+    def _on_clear_all_cache_clicked(self, _button: Gtk.Button) -> None:
+        heading = "Clear all APT/Snap cache?"
+        body = (
+            "This will remove cached package data for APT and Snap using administrator privileges.\n"
+            "A future refresh/update may take longer because caches will be rebuilt."
+        )
+        dialog = Adw.MessageDialog.new(self, heading, body)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("confirm", "Clear Cache")
+        dialog.set_response_appearance("confirm", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def _on_response(_dlg: Adw.MessageDialog, response: str) -> None:
+            if response == "confirm":
+                self._run_clear_cache_action()
+            dialog.close()
+
+        dialog.connect("response", _on_response)
+        dialog.present()
+
     def _on_package_remove_clicked(self, _button: Gtk.Button, package: PackageEntry) -> None:
         heading = f"Remove package '{package.name}'?"
         body = f"This will remove the {package.source} package '{package.name}'."
@@ -909,6 +935,19 @@ class MainWindow(Adw.ApplicationWindow):
             lambda fut, total=len(packages): GLib.idle_add(self._on_update_all_done, fut, total)
         )
 
+    def _run_clear_cache_action(self) -> None:
+        if self._operation_inflight:
+            self.status_label.set_text("Another package operation is already running.")
+            return
+
+        self._operation_inflight = True
+        self._update_controls_state()
+        self._append_package_log("Running action: clear-all-cache")
+        self.status_label.set_text("Clearing APT/Snap cache...")
+
+        future = self._executor.submit(self._execute_clear_cache_action)
+        future.add_done_callback(lambda fut: GLib.idle_add(self._on_clear_cache_done, fut))
+
     def _run_partition_fix_action(self, partition: PartitionEntry) -> None:
         if self._operation_inflight:
             self.status_label.set_text("Another privileged operation is already running.")
@@ -954,6 +993,9 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _execute_update_all_action(self, apt_names: list[str], snap_names: list[str]) -> list[PackageActionResult]:
         return self._package_action_service.update_all_packages(apt_names=apt_names, snap_names=snap_names)
+
+    def _execute_clear_cache_action(self) -> list[PackageActionResult]:
+        return self._package_action_service.clear_all_cache()
 
     def _execute_partition_fix_action(self, partition: PartitionEntry) -> PartitionFixResult:
         return self._partition_action_service.fix_partition(partition)
@@ -1002,6 +1044,54 @@ class MainWindow(Adw.ApplicationWindow):
             failed_count = len(results) - success_count
             self.status_label.set_text(
                 f"Update-all completed with errors ({failed_count}/{len(results)} command(s) failed)."
+            )
+
+        self._operation_inflight = False
+        self._update_controls_state()
+        self._start_refresh(reason="post-action")
+        return False
+
+    def _on_clear_cache_done(self, future: Future[list[PackageActionResult]]) -> bool:
+        try:
+            results = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self._append_package_log(f"Action failed unexpectedly: clear-all-cache | {exc}")
+            self.status_label.set_text(f"Cache clear failed: {exc}")
+            self._operation_inflight = False
+            self._update_controls_state()
+            return False
+
+        if not results:
+            self._append_package_log("FAILED: cache clear returned no steps.")
+            self.status_label.set_text("Cache clear failed: no cleanup steps were run.")
+            self._operation_inflight = False
+            self._update_controls_state()
+            return False
+
+        success_count = 0
+        for result in results:
+            if result.ok:
+                success_count += 1
+                self._append_package_log(f"SUCCESS: {result.message}")
+            else:
+                self._append_package_log(f"FAILED: {result.message} (exit {result.code})")
+
+            if result.command:
+                self._append_package_log("command: " + " ".join(result.command))
+            self._append_package_log(
+                f"timing: queue={result.queue_wait_seconds:.2f}s exec={result.execution_seconds:.2f}s"
+            )
+            if result.stdout:
+                self._append_package_log(f"stdout: {result.stdout[-1200:]}")
+            if result.stderr:
+                self._append_package_log(f"stderr: {result.stderr[-1200:]}")
+
+        if success_count == len(results):
+            self.status_label.set_text("Success: APT/Snap caches cleared.")
+        else:
+            failed_count = len(results) - success_count
+            self.status_label.set_text(
+                f"Cache cleanup completed with errors ({failed_count}/{len(results)} step(s) failed)."
             )
 
         self._operation_inflight = False
@@ -1135,10 +1225,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.partition_listbox.set_sensitive(panel_sensitive)
         has_updates = any(item.update_available for item in self._packages)
         self.update_all_button.set_sensitive(package_panel_sensitive and has_updates)
+        self.clear_cache_button.set_sensitive(package_panel_sensitive)
         if has_updates:
             self.update_all_button.set_tooltip_text("Update all currently upgradable packages.")
         else:
             self.update_all_button.set_tooltip_text("No updates available.")
+        self.clear_cache_button.set_tooltip_text("Clear all APT and Snap cache data.")
 
     def _set_textview_content(self, text_view: Gtk.TextView, content: str) -> None:
         buffer = text_view.get_buffer()

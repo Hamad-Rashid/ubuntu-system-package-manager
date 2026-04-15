@@ -8,6 +8,7 @@ Build an Ubuntu desktop app that provides:
 - Update action per package (enabled only when update exists)
 - Remove/Delete action per package
 - Enable/Disable action per package (when supported)
+- Clear all package caches (APT + Snap) from one action
 - Connected Bluetooth devices with battery percentage
 - Partition mount health checks and a Fix action when mount issues are detected
 
@@ -17,6 +18,7 @@ Build an Ubuntu desktop app that provides:
   - Snap: supports `snap disable` / `snap enable`
   - APT: no true disable/enable; use service-level toggles when applicable (`systemctl`) or show as unsupported
 - Risky actions (remove, filesystem fix, mount repair) require privilege escalation via PolicyKit (`pkexec`).
+- Cache-clearing action is privileged and must run with explicit confirmation.
 
 ## 3. Tech Stack
 - Language: Python 3
@@ -113,6 +115,7 @@ All modifying commands go through a single privileged runner:
 - Update package
 - Remove package
 - Enable/Disable package or service
+- Clear package caches (APT + Snap)
 - Filesystem repair and remount
 - Custom disk fix script execution: `/media/hamad/Office/diskfix.sh`
 
@@ -134,7 +137,7 @@ Runner requirements:
 - Keep an operation history log
 - Cancel/Retry controls for failed operations
 
-## 8. Implementation Phases (4 Phases)
+## 8. Implementation Phases (5 Phases)
 
 ### Phase 1: Foundation + Read-Only Monitoring
 Scope:
@@ -180,3 +183,16 @@ Scope:
 
 Deliverable:
 - Production-ready Ubuntu package with install docs and validated workflows
+
+### Phase 5: Cache Management + One-Click Cleanup
+Scope:
+- Add a single UI button: `Clear All Cache`
+- On click, run privileged cache cleanup workflow for both package systems:
+  - APT cache cleanup (`apt clean`, `apt autoclean`, and package list cache cleanup)
+  - Snap cache cleanup (snapd cache directories and stale download cache)
+- Show confirmation dialog before execution because cleanup is irreversible
+- Show progress and final result log in UI with command output summary
+- Re-scan package state after cleanup and refresh dashboard status
+
+Deliverable:
+- Fully working one-click cache cleanup for both APT and Snap with safe confirmations and operation logs

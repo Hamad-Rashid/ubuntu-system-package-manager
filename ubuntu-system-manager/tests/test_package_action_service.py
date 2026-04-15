@@ -20,19 +20,23 @@ class PackageActionServiceTests(unittest.TestCase):
         self.service = PackageActionService()
 
     @staticmethod
-    def _ok_result(command: list[str]) -> tuple[PrivilegedCommandResult, int]:
+    def _result(command: list[str], *, ok: bool = True, code: int = 0) -> tuple[PrivilegedCommandResult, int]:
         return (
             PrivilegedCommandResult(
-                ok=True,
-                stdout="ok",
-                stderr="",
-                code=0,
+                ok=ok,
+                stdout="ok" if ok else "",
+                stderr="" if ok else "failed",
+                code=code,
                 command=command,
                 queue_wait_seconds=0.12,
                 execution_seconds=0.85,
             ),
             1,
         )
+
+    @staticmethod
+    def _ok_result(command: list[str]) -> tuple[PrivilegedCommandResult, int]:
+        return PackageActionServiceTests._result(command, ok=True, code=0)
 
     def test_update_package_apt_uses_expected_command(self) -> None:
         expected_cmd = ["pkexec", "apt-get", "install", "--only-upgrade", "-y", "curl"]
@@ -139,6 +143,44 @@ class PackageActionServiceTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("unsupported", result.message.lower())
         self.assertEqual(result.command, [])
+
+    def test_clear_all_cache_runs_all_expected_steps(self) -> None:
+        expected_calls = [
+            ["apt-get", "clean"],
+            ["apt-get", "autoclean"],
+            ["rm", "-rf", "/var/lib/apt/lists"],
+            ["mkdir", "-p", "/var/lib/apt/lists/partial"],
+            ["rm", "-rf", "/var/lib/snapd/cache"],
+            ["mkdir", "-p", "/var/lib/snapd/cache"],
+            ["rm", "-rf", "/var/cache/snapd"],
+            ["mkdir", "-p", "/var/cache/snapd"],
+        ]
+        with mock.patch(
+            "ubuntu_system_manager.services.package_action_service.run_privileged_command_with_retry",
+            side_effect=[self._ok_result(["pkexec", *cmd]) for cmd in expected_calls],
+        ) as mock_run:
+            results = self.service.clear_all_cache()
+
+        self.assertEqual(len(results), len(expected_calls))
+        self.assertTrue(all(item.ok for item in results))
+        self.assertEqual(mock_run.call_count, len(expected_calls))
+        for index, call in enumerate(mock_run.call_args_list):
+            self.assertEqual(call.args[0], expected_calls[index])
+
+    def test_clear_all_cache_stops_after_first_failed_step(self) -> None:
+        with mock.patch(
+            "ubuntu_system_manager.services.package_action_service.run_privileged_command_with_retry",
+            side_effect=[
+                self._ok_result(["pkexec", "apt-get", "clean"]),
+                self._result(["pkexec", "apt-get", "autoclean"], ok=False, code=100),
+            ],
+        ) as mock_run:
+            results = self.service.clear_all_cache()
+
+        self.assertEqual(len(results), 2)
+        self.assertTrue(results[0].ok)
+        self.assertFalse(results[1].ok)
+        self.assertEqual(mock_run.call_count, 2)
 
 
 if __name__ == "__main__":

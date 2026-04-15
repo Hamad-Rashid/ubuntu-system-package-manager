@@ -5,6 +5,7 @@ Desktop app for Ubuntu (GTK4 + Libadwaita) to monitor and manage:
 - RAM and storage usage
 - Installed packages (APT + Snap)
 - Package updates/remove/enable-disable (where supported)
+- One-click `Clear All Cache` for APT + Snap
 - Bluetooth/USB receiver visibility
 - Partition mount and fix workflows
 
