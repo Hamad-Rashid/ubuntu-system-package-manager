@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+import shlex
 
 from .command_runner import run_privileged_command_with_retry
 
@@ -70,10 +71,45 @@ class PackageActionService:
             result.execution_seconds,
         )
 
+    def _execute_script_action(
+        self,
+        *,
+        script: str,
+        timeout: int,
+        message: str,
+        retry_attempts: int = 1,
+    ) -> PackageActionResult:
+        return self._execute_action(
+            cmd=["bash", "-lc", script],
+            timeout=timeout,
+            message=message,
+            retry_attempts=retry_attempts,
+        )
+
     def update_all_packages(self, *, apt_names: list[str], snap_names: list[str]) -> list[PackageActionResult]:
         results: list[PackageActionResult] = []
 
         normalized_apt = sorted({name.strip() for name in apt_names if self._is_valid_package_name(name)})
+        normalized_snap = sorted({name.strip() for name in snap_names if self._is_valid_package_name(name)})
+        if normalized_apt and normalized_snap:
+            apt_args = " ".join(shlex.quote(name) for name in normalized_apt)
+            snap_args = " ".join(shlex.quote(name) for name in normalized_snap)
+            script = (
+                "set -e\n"
+                "echo 'Running grouped update workflow (APT + Snap)'\n"
+                f"apt-get install --only-upgrade -y {apt_args}\n"
+                f"snap refresh {snap_args}"
+            )
+            results.append(
+                self._execute_script_action(
+                    script=script,
+                    timeout=3600,
+                    message=f"Update all packages (apt: {len(normalized_apt)}, snap: {len(normalized_snap)})",
+                    retry_attempts=1,
+                )
+            )
+            return results
+
         if normalized_apt:
             cmd = ["apt-get", "install", "--only-upgrade", "-y", *normalized_apt]
             results.append(
@@ -85,7 +121,6 @@ class PackageActionService:
                 )
             )
 
-        normalized_snap = sorted({name.strip() for name in snap_names if self._is_valid_package_name(name)})
         if normalized_snap:
             cmd = ["snap", "refresh", *normalized_snap]
             results.append(
@@ -100,28 +135,27 @@ class PackageActionService:
         return results
 
     def clear_all_cache(self) -> list[PackageActionResult]:
-        steps: list[tuple[str, list[str], int]] = [
-            ("APT cache clean", ["apt-get", "clean"], 1200),
-            ("APT cache autoclean", ["apt-get", "autoclean"], 1200),
-            ("Remove APT package lists", ["rm", "-rf", "/var/lib/apt/lists"], 600),
-            ("Recreate APT package list directory", ["mkdir", "-p", "/var/lib/apt/lists/partial"], 600),
-            ("Remove Snap cache", ["rm", "-rf", "/var/lib/snapd/cache"], 600),
-            ("Recreate Snap cache directory", ["mkdir", "-p", "/var/lib/snapd/cache"], 600),
-            ("Remove Snap system cache", ["rm", "-rf", "/var/cache/snapd"], 600),
-            ("Recreate Snap system cache directory", ["mkdir", "-p", "/var/cache/snapd"], 600),
-        ]
-        results: list[PackageActionResult] = []
-        for message, command, timeout in steps:
-            result = self._execute_action(
-                cmd=command,
-                timeout=timeout,
-                message=message,
-                retry_attempts=1,
-            )
-            results.append(result)
-            if not result.ok:
-                break
-        return results
+        script = (
+            "set -e\n"
+            "echo 'Clearing APT cache'\n"
+            "apt-get clean\n"
+            "apt-get autoclean\n"
+            "rm -rf /var/lib/apt/lists\n"
+            "mkdir -p /var/lib/apt/lists/partial\n"
+            "echo 'Clearing Snap cache'\n"
+            "rm -rf /var/lib/snapd/cache\n"
+            "mkdir -p /var/lib/snapd/cache\n"
+            "rm -rf /var/cache/snapd\n"
+            "mkdir -p /var/cache/snapd\n"
+            "echo 'Cache cleanup done'"
+        )
+        result = self._execute_script_action(
+            script=script,
+            timeout=2400,
+            message="Clear all APT/Snap cache",
+            retry_attempts=1,
+        )
+        return [result]
 
     def update_package(self, *, name: str, source: str) -> PackageActionResult:
         normalized_source = self._normalize_source(source)

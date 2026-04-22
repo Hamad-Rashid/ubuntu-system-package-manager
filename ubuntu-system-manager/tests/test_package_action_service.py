@@ -70,31 +70,33 @@ class PackageActionServiceTests(unittest.TestCase):
         self.assertEqual(result.command, [])
 
     def test_update_all_packages_runs_grouped_apt_and_snap_commands(self) -> None:
-        apt_cmd = ["pkexec", "apt-get", "install", "--only-upgrade", "-y", "curl", "vim"]
-        snap_cmd = ["pkexec", "snap", "refresh", "firefox", "snapd"]
+        grouped_cmd = [
+            "pkexec",
+            "bash",
+            "-lc",
+            (
+                "set -e\n"
+                "echo 'Running grouped update workflow (APT + Snap)'\n"
+                "apt-get install --only-upgrade -y curl vim\n"
+                "snap refresh firefox snapd"
+            ),
+        ]
         with mock.patch(
             "ubuntu_system_manager.services.package_action_service.run_privileged_command_with_retry",
-            side_effect=[self._ok_result(apt_cmd), self._ok_result(snap_cmd)],
+            return_value=self._ok_result(grouped_cmd),
         ) as mock_run:
             results = self.service.update_all_packages(
                 apt_names=["vim", "curl", "vim"],
                 snap_names=["snapd", "firefox", "snapd"],
             )
 
-        self.assertEqual(len(results), 2)
-        self.assertEqual(results[0].command, apt_cmd)
-        self.assertEqual(results[1].command, snap_cmd)
-        self.assertEqual(mock_run.call_count, 2)
-        first_call = mock_run.call_args_list[0]
-        second_call = mock_run.call_args_list[1]
-        self.assertEqual(
-            first_call.args[0],
-            ["apt-get", "install", "--only-upgrade", "-y", "curl", "vim"],
-        )
-        self.assertEqual(
-            second_call.args[0],
-            ["snap", "refresh", "firefox", "snapd"],
-        )
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].command, grouped_cmd)
+        mock_run.assert_called_once()
+        called_cmd = mock_run.call_args.args[0]
+        self.assertEqual(called_cmd[:2], ["bash", "-lc"])
+        self.assertIn("apt-get install --only-upgrade -y curl vim", called_cmd[2])
+        self.assertIn("snap refresh firefox snapd", called_cmd[2])
 
     def test_update_all_packages_with_empty_lists_returns_no_results(self) -> None:
         with mock.patch(
@@ -144,43 +146,51 @@ class PackageActionServiceTests(unittest.TestCase):
         self.assertIn("unsupported", result.message.lower())
         self.assertEqual(result.command, [])
 
-    def test_clear_all_cache_runs_all_expected_steps(self) -> None:
-        expected_calls = [
-            ["apt-get", "clean"],
-            ["apt-get", "autoclean"],
-            ["rm", "-rf", "/var/lib/apt/lists"],
-            ["mkdir", "-p", "/var/lib/apt/lists/partial"],
-            ["rm", "-rf", "/var/lib/snapd/cache"],
-            ["mkdir", "-p", "/var/lib/snapd/cache"],
-            ["rm", "-rf", "/var/cache/snapd"],
-            ["mkdir", "-p", "/var/cache/snapd"],
+    def test_clear_all_cache_runs_single_grouped_command(self) -> None:
+        grouped_cmd = [
+            "pkexec",
+            "bash",
+            "-lc",
+            (
+                "set -e\n"
+                "echo 'Clearing APT cache'\n"
+                "apt-get clean\n"
+                "apt-get autoclean\n"
+                "rm -rf /var/lib/apt/lists\n"
+                "mkdir -p /var/lib/apt/lists/partial\n"
+                "echo 'Clearing Snap cache'\n"
+                "rm -rf /var/lib/snapd/cache\n"
+                "mkdir -p /var/lib/snapd/cache\n"
+                "rm -rf /var/cache/snapd\n"
+                "mkdir -p /var/cache/snapd\n"
+                "echo 'Cache cleanup done'"
+            ),
         ]
         with mock.patch(
             "ubuntu_system_manager.services.package_action_service.run_privileged_command_with_retry",
-            side_effect=[self._ok_result(["pkexec", *cmd]) for cmd in expected_calls],
+            return_value=self._ok_result(grouped_cmd),
         ) as mock_run:
             results = self.service.clear_all_cache()
 
-        self.assertEqual(len(results), len(expected_calls))
-        self.assertTrue(all(item.ok for item in results))
-        self.assertEqual(mock_run.call_count, len(expected_calls))
-        for index, call in enumerate(mock_run.call_args_list):
-            self.assertEqual(call.args[0], expected_calls[index])
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].ok)
+        self.assertEqual(results[0].command, grouped_cmd)
+        mock_run.assert_called_once()
+        called_cmd = mock_run.call_args.args[0]
+        self.assertEqual(called_cmd[:2], ["bash", "-lc"])
+        self.assertIn("apt-get clean", called_cmd[2])
+        self.assertIn("rm -rf /var/cache/snapd", called_cmd[2])
 
-    def test_clear_all_cache_stops_after_first_failed_step(self) -> None:
+    def test_clear_all_cache_returns_single_failed_result(self) -> None:
         with mock.patch(
             "ubuntu_system_manager.services.package_action_service.run_privileged_command_with_retry",
-            side_effect=[
-                self._ok_result(["pkexec", "apt-get", "clean"]),
-                self._result(["pkexec", "apt-get", "autoclean"], ok=False, code=100),
-            ],
+            return_value=self._result(["pkexec", "bash", "-lc", "script"], ok=False, code=100),
         ) as mock_run:
             results = self.service.clear_all_cache()
 
-        self.assertEqual(len(results), 2)
-        self.assertTrue(results[0].ok)
-        self.assertFalse(results[1].ok)
-        self.assertEqual(mock_run.call_count, 2)
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0].ok)
+        mock_run.assert_called_once()
 
 
 if __name__ == "__main__":
