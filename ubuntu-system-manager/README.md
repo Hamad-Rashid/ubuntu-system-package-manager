@@ -34,11 +34,11 @@ sudo apt install -y /path/to/ubuntu-system-manager_0.4.2_amd64.deb
 Replace `<user>`, `<repo>`, and version/tag as needed.
 
 ```bash
-wget -O /tmp/ubuntu-system-manager_0.4.1_amd64.deb \
-  https://github.com/<user>/<repo>/releases/download/v0.4.1/ubuntu-system-manager_0.4.1_amd64.deb
+wget -O /tmp/ubuntu-system-manager_0.4.2_amd64.deb \
+  https://github.com/<user>/<repo>/releases/download/v0.4.2/ubuntu-system-manager_0.4.2_amd64.deb
 
 sudo apt update
-sudo apt install -y /tmp/ubuntu-system-manager_0.4.1_amd64.deb
+sudo apt install -y /tmp/ubuntu-system-manager_0.4.2_amd64.deb
 ubuntu-system-manager
 ```
 
@@ -66,12 +66,12 @@ cd <repo>/ubuntu-system-manager
 
 ```bash
 cd /media/hamad/Office/hamad/ubuntu-system-manager
-./packaging/build_deb.sh 0.4.1
+./packaging/build_deb.sh 0.4.2
 ```
 
 Output:
 
-- `dist/ubuntu-system-manager_0.4.1_amd64.deb` (architecture depends on build machine)
+- `dist/ubuntu-system-manager_0.4.2_amd64.deb` (architecture depends on build machine)
   (The build script removes `dist/ubuntu-system-manager_*.deb` before packaging, so the folder only contains the latest artifact.)
 
 ## Publish A New Release (Maintainer)
