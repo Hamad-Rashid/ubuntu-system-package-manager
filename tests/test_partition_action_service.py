@@ -35,6 +35,22 @@ class PartitionActionServiceTests(unittest.TestCase):
         )
 
     @staticmethod
+    def _workflow_result(step_codes: list[int], *, ok: bool = True, code: int = 0) -> tuple[PrivilegedCommandResult, int]:
+        stdout = "\n".join(f"__USM_STEP_END:{idx}:{step_code}" for idx, step_code in enumerate(step_codes))
+        return (
+            PrivilegedCommandResult(
+                ok=ok,
+                stdout=stdout,
+                stderr="" if ok else "failed",
+                code=code,
+                command=["pkexec", "bash", "-lc", "script"],
+                queue_wait_seconds=0.01,
+                execution_seconds=0.11,
+            ),
+            1,
+        )
+
+    @staticmethod
     def _partition(**overrides: object) -> PartitionEntry:
         data = {
             "device": "/dev/sda1",
@@ -51,12 +67,10 @@ class PartitionActionServiceTests(unittest.TestCase):
         return PartitionEntry(**data)
 
     def test_special_mount_fix_uses_embedded_ntfs3g_flow(self) -> None:
-        mkdir_cmd = ["pkexec", "mkdir", "-p", "/media/hamad/Other"]
-        mount_cmd = ["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"]
         with (
             mock.patch(
                 "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
-                side_effect=[self._priv_result(mkdir_cmd), self._priv_result(mount_cmd)],
+                return_value=self._workflow_result([0, 0]),
             ) as mock_priv,
             mock.patch(
                 "ubuntu_system_manager.services.partition_action_service.run_command",
@@ -71,11 +85,10 @@ class PartitionActionServiceTests(unittest.TestCase):
             result = self.service.fix_partition(self._partition())
 
         self.assertTrue(result.ok)
-        self.assertEqual(mock_priv.call_count, 2)
-        self.assertEqual(
-            mock_priv.call_args_list[1].args[0],
-            ["mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"],
-        )
+        mock_priv.assert_called_once()
+        self.assertEqual(mock_priv.call_args.args[0][:2], ["bash", "-lc"])
+        self.assertIn("mkdir -p /media/hamad/Other", mock_priv.call_args.args[0][2])
+        self.assertIn("mount -t ntfs-3g /dev/sda1 /media/hamad/Other", mock_priv.call_args.args[0][2])
         expected_calls = [mock.call(["findmnt", "-rn", "-T", "/media/hamad/Other", "-o", "SOURCE,TARGET"], timeout=15)]
         self.assertEqual(mock_cmd.call_args_list, expected_calls)
 
@@ -83,10 +96,7 @@ class PartitionActionServiceTests(unittest.TestCase):
         with (
             mock.patch(
                 "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
-                side_effect=[
-                    self._priv_result(["pkexec", "mkdir", "-p", "/media/hamad/Other"]),
-                    self._priv_result(["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"]),
-                ],
+                return_value=self._workflow_result([0, 0]),
             ),
             mock.patch(
                 "ubuntu_system_manager.services.partition_action_service.run_command",
@@ -104,12 +114,10 @@ class PartitionActionServiceTests(unittest.TestCase):
         self.assertIn("Refusing", result.message)
 
     def test_mount_partition_uses_ntfs3g_and_verifies_mount(self) -> None:
-        mkdir_cmd = ["pkexec", "mkdir", "-p", "/media/hamad/Other"]
-        mount_cmd = ["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"]
         with (
             mock.patch(
                 "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
-                side_effect=[self._priv_result(mkdir_cmd), self._priv_result(mount_cmd)],
+                return_value=self._workflow_result([0, 0]),
             ) as mock_priv,
             mock.patch(
                 "ubuntu_system_manager.services.partition_action_service.run_command",
@@ -121,23 +129,13 @@ class PartitionActionServiceTests(unittest.TestCase):
             )
 
         self.assertTrue(result.ok)
-        self.assertEqual(mock_priv.call_count, 2)
-        self.assertEqual(
-            mock_priv.call_args_list[1].args[0],
-            ["mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"],
-        )
+        mock_priv.assert_called_once()
+        self.assertIn("mount -t ntfs-3g /dev/sda1 /media/hamad/Other", mock_priv.call_args.args[0][2])
 
     def test_mount_partition_failure_suggests_fix(self) -> None:
         with mock.patch(
             "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
-            side_effect=[
-                self._priv_result(["pkexec", "mkdir", "-p", "/media/hamad/Other"]),
-                self._priv_result(
-                    ["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"],
-                    ok=False,
-                    code=32,
-                ),
-            ],
+            return_value=self._workflow_result([0, 32], ok=False, code=32),
         ):
             result = self.service.mount_partition(
                 self._partition(status="Not mounted", status_detail="No active mountpoint.", can_mount=True, can_fix=False)
@@ -150,15 +148,7 @@ class PartitionActionServiceTests(unittest.TestCase):
         with (
             mock.patch(
                 "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
-                side_effect=[
-                    self._priv_result(["pkexec", "mkdir", "-p", "/media/hamad/Other"]),
-                    self._priv_result(
-                        ["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda2", "/media/hamad/Other"],
-                        ok=False,
-                        code=32,
-                    ),
-                    self._priv_result(["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"]),
-                ],
+                return_value=self._workflow_result([0, 32, 0]),
             ) as mock_priv,
             mock.patch(
                 "ubuntu_system_manager.services.partition_action_service.run_command",
@@ -176,15 +166,9 @@ class PartitionActionServiceTests(unittest.TestCase):
             )
 
         self.assertTrue(result.ok)
-        self.assertEqual(mock_priv.call_count, 3)
-        self.assertEqual(
-            mock_priv.call_args_list[1].args[0],
-            ["mount", "-t", "ntfs-3g", "/dev/sda2", "/media/hamad/Other"],
-        )
-        self.assertEqual(
-            mock_priv.call_args_list[2].args[0],
-            ["mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"],
-        )
+        mock_priv.assert_called_once()
+        self.assertIn("mount -t ntfs-3g /dev/sda2 /media/hamad/Other", mock_priv.call_args.args[0][2])
+        self.assertIn("mount -t ntfs-3g /dev/sda1 /media/hamad/Other", mock_priv.call_args.args[0][2])
 
     def test_mount_partition_unknown_filesystem_can_use_ntfs_fallback(self) -> None:
         with (
@@ -192,13 +176,7 @@ class PartitionActionServiceTests(unittest.TestCase):
                 "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
                 side_effect=[
                     self._priv_result(["pkexec", "mount", "/dev/sda2"], ok=False, code=32),
-                    self._priv_result(["pkexec", "mkdir", "-p", "/media/hamad/Other"]),
-                    self._priv_result(
-                        ["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda2", "/media/hamad/Other"],
-                        ok=False,
-                        code=32,
-                    ),
-                    self._priv_result(["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"]),
+                    self._workflow_result([0, 32, 0]),
                 ],
             ) as mock_priv,
             mock.patch(
@@ -219,16 +197,13 @@ class PartitionActionServiceTests(unittest.TestCase):
             )
 
         self.assertTrue(result.ok)
-        self.assertEqual(mock_priv.call_count, 4)
+        self.assertEqual(mock_priv.call_count, 2)
 
     def test_mount_partition_normalizes_special_target_case(self) -> None:
         with (
             mock.patch(
                 "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
-                side_effect=[
-                    self._priv_result(["pkexec", "mkdir", "-p", "/media/hamad/Other"]),
-                    self._priv_result(["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"]),
-                ],
+                return_value=self._workflow_result([0, 0]),
             ) as mock_priv,
             mock.patch(
                 "ubuntu_system_manager.services.partition_action_service.run_command",
@@ -246,19 +221,14 @@ class PartitionActionServiceTests(unittest.TestCase):
             )
 
         self.assertTrue(result.ok)
-        self.assertEqual(
-            mock_priv.call_args_list[0].args[0],
-            ["mkdir", "-p", "/media/hamad/Other"],
-        )
+        mock_priv.assert_called_once()
+        self.assertIn("mkdir -p /media/hamad/Other", mock_priv.call_args.args[0][2])
 
     def test_mount_partition_normalizes_special_target_variant_other1(self) -> None:
         with (
             mock.patch(
                 "ubuntu_system_manager.services.partition_action_service.run_privileged_command_with_retry",
-                side_effect=[
-                    self._priv_result(["pkexec", "mkdir", "-p", "/media/hamad/Other"]),
-                    self._priv_result(["pkexec", "mount", "-t", "ntfs-3g", "/dev/sda1", "/media/hamad/Other"]),
-                ],
+                return_value=self._workflow_result([0, 0]),
             ) as mock_priv,
             mock.patch(
                 "ubuntu_system_manager.services.partition_action_service.run_command",
@@ -276,10 +246,8 @@ class PartitionActionServiceTests(unittest.TestCase):
             )
 
         self.assertTrue(result.ok)
-        self.assertEqual(
-            mock_priv.call_args_list[0].args[0],
-            ["mkdir", "-p", "/media/hamad/Other"],
-        )
+        mock_priv.assert_called_once()
+        self.assertIn("mkdir -p /media/hamad/Other", mock_priv.call_args.args[0][2])
 
 
 if __name__ == "__main__":

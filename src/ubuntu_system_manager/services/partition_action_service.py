@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+import re
+import shlex
 import time
 
 from ubuntu_system_manager.models import PartitionEntry
@@ -16,6 +18,7 @@ SPECIAL_FALLBACK_DEVICE = "/dev/sda1"
 SYSTEM_MOUNTPOINTS = {"/", "/boot", "/boot/efi"}
 VERIFY_RETRY_ATTEMPTS = 3
 VERIFY_RETRY_DELAY_SECONDS = 0.5
+STEP_END_RE = re.compile(r"^__USM_STEP_END:(?P<index>\d+):(?P<code>\d+)$")
 
 
 def _is_special_mountpoint(path: str) -> bool:
@@ -52,6 +55,14 @@ class PartitionFixResult:
     ok: bool
     message: str
     steps: list[PartitionFixStepResult]
+
+
+@dataclass(slots=True)
+class _PrivilegedStepSpec:
+    step: str
+    command: list[str]
+    stop_on_failure: bool = True
+    run_if_previous_failed: bool = False
 
 
 class PartitionActionService:
@@ -134,37 +145,24 @@ class PartitionActionService:
                     )
                 return PartitionFixResult(True, f"Partition mounted successfully at {special_target}.", steps)
 
-            mkdir_step = self._run_privileged_step(
-                step=f"Ensure mountpoint directory {expected_mountpoint}",
-                command=["mkdir", "-p", expected_mountpoint],
-                timeout=120,
-                retry_attempts=1,
-            )
-            steps.append(mkdir_step)
-            if not mkdir_step.ok:
-                return PartitionFixResult(
-                    False,
-                    self._mount_failure_message(
-                        device=device,
-                        steps=steps,
-                        fallback=f"Failed to prepare mountpoint {expected_mountpoint}.",
-                    ),
-                    steps,
-                )
-
             mount_cmd, mount_step_name = self._build_mount_command(
                 device=device,
                 filesystem=filesystem,
                 target_mountpoint=expected_mountpoint,
             )
-            mount_step = self._run_privileged_step(
-                step=mount_step_name,
-                command=mount_cmd,
-                timeout=300,
+            mount_steps = self._run_privileged_steps(
+                [
+                    _PrivilegedStepSpec(
+                        step=f"Ensure mountpoint directory {expected_mountpoint}",
+                        command=["mkdir", "-p", expected_mountpoint],
+                    ),
+                    _PrivilegedStepSpec(step=mount_step_name, command=mount_cmd),
+                ],
+                timeout=420,
                 retry_attempts=1,
             )
-            steps.append(mount_step)
-            if not mount_step.ok:
+            steps.extend(mount_steps)
+            if not mount_steps or not mount_steps[-1].ok:
                 recovered, recovery_message = self._attempt_ntfs_recovery_mount(
                     steps=steps,
                     device=device,
@@ -358,38 +356,128 @@ class PartitionActionService:
         filesystem: str,
         target_mountpoint: str,
     ) -> list[PartitionFixStepResult]:
-        steps: list[PartitionFixStepResult] = []
-        mkdir_step = self._run_privileged_step(
-            step=f"Ensure mountpoint directory {target_mountpoint}",
-            command=["mkdir", "-p", target_mountpoint],
-            timeout=120,
-            retry_attempts=1,
-        )
-        steps.append(mkdir_step)
-        if not mkdir_step.ok:
-            return steps
-
         candidate_devices: list[str] = []
         for candidate in [device, SPECIAL_FALLBACK_DEVICE]:
             if candidate and candidate not in candidate_devices:
                 candidate_devices.append(candidate)
 
+        step_specs = [
+            _PrivilegedStepSpec(
+                step=f"Ensure mountpoint directory {target_mountpoint}",
+                command=["mkdir", "-p", target_mountpoint],
+            )
+        ]
         for idx, candidate_device in enumerate(candidate_devices, start=1):
             mount_cmd = ["mount", "-t", "ntfs-3g", candidate_device, target_mountpoint]
             mount_step_name = f"Mount {candidate_device} to {target_mountpoint} with ntfs-3g"
             if candidate_device != device:
                 mount_step_name = f"{mount_step_name} (fallback #{idx})"
 
-            mount_step = self._run_privileged_step(
-                step=mount_step_name,
-                command=mount_cmd,
-                timeout=300,
-                retry_attempts=1,
+            step_specs.append(
+                _PrivilegedStepSpec(
+                    step=mount_step_name,
+                    command=mount_cmd,
+                    stop_on_failure=candidate_device == candidate_devices[-1],
+                    run_if_previous_failed=candidate_device != candidate_devices[0],
+                )
             )
-            steps.append(mount_step)
-            if mount_step.ok:
-                break
+
+        return self._run_privileged_steps(step_specs, timeout=420, retry_attempts=1)
+
+    def _run_privileged_steps(
+        self,
+        step_specs: list[_PrivilegedStepSpec],
+        *,
+        timeout: int,
+        retry_attempts: int = 0,
+    ) -> list[PartitionFixStepResult]:
+        if not step_specs:
+            return []
+
+        script = self._build_privileged_steps_script(step_specs)
+        result, attempts = run_privileged_command_with_retry(
+            ["bash", "-lc", script],
+            timeout=timeout,
+            retry_attempts=retry_attempts,
+            retry_delay_seconds=1.0,
+        )
+        step_codes = self._parse_step_exit_codes(result.stdout)
+        if not step_codes:
+            stderr = result.stderr
+            if attempts > 1:
+                stderr = f"{stderr}\nRetried attempts: {attempts}".strip()
+            return [
+                PartitionFixStepResult(
+                    ok=result.ok,
+                    code=result.code,
+                    step="Run privileged partition workflow",
+                    stdout=result.stdout,
+                    stderr=stderr,
+                    command=result.command,
+                    queue_wait_seconds=result.queue_wait_seconds,
+                    execution_seconds=result.execution_seconds,
+                )
+            ]
+
+        steps: list[PartitionFixStepResult] = []
+        for idx, code in step_codes:
+            spec = step_specs[idx]
+            stderr = result.stderr if code != 0 else ""
+            if attempts > 1 and code != 0:
+                stderr = f"{stderr}\nRetried attempts: {attempts}".strip()
+            steps.append(
+                PartitionFixStepResult(
+                    ok=code == 0,
+                    code=code,
+                    step=spec.step,
+                    stdout=result.stdout,
+                    stderr=stderr,
+                    command=result.command,
+                    queue_wait_seconds=result.queue_wait_seconds,
+                    execution_seconds=result.execution_seconds,
+                )
+            )
         return steps
+
+    def _build_privileged_steps_script(self, step_specs: list[_PrivilegedStepSpec]) -> str:
+        lines = ["set +e", "previous_failed=0"]
+        for idx, spec in enumerate(step_specs):
+            if spec.run_if_previous_failed:
+                lines.extend(
+                    [
+                        'if [ "$previous_failed" -eq 0 ]; then',
+                        f"  echo __USM_STEP_SKIP:{idx}",
+                        "else",
+                    ]
+                )
+                indent = "  "
+            else:
+                indent = ""
+
+            command = shlex.join(spec.command)
+            lines.extend(
+                [
+                    f"{indent}{command}",
+                    f"{indent}code=$?",
+                    f"{indent}echo __USM_STEP_END:{idx}:$code",
+                    f'{indent}if [ "$code" -ne 0 ]; then previous_failed=1; else previous_failed=0; fi',
+                ]
+            )
+            if spec.stop_on_failure:
+                lines.append(f'{indent}if [ "$code" -ne 0 ]; then exit "$code"; fi')
+            if spec.run_if_previous_failed:
+                lines.append("fi")
+        lines.append("exit 0")
+        return "\n".join(lines)
+
+    def _parse_step_exit_codes(self, stdout: str) -> list[tuple[int, int]]:
+        step_codes: list[tuple[int, int]] = []
+        for line in stdout.splitlines():
+            match = STEP_END_RE.match(line.strip())
+            if not match:
+                continue
+            step_codes.append((int(match.group("index")), int(match.group("code"))))
+        return step_codes
 
     def _attempt_ntfs_recovery_mount(
         self,
@@ -419,35 +507,30 @@ class PartitionActionService:
         return True, f"Partition recovered via fallback mount at {SPECIAL_TARGET_CANONICAL}."
 
     def _attempt_remount_steps(self, *, device: str, expected_mountpoint: str) -> list[PartitionFixStepResult]:
-        steps: list[PartitionFixStepResult] = []
         if expected_mountpoint:
-            mkdir_step = self._run_privileged_step(
-                step=f"Ensure mountpoint directory {expected_mountpoint}",
-                command=["mkdir", "-p", expected_mountpoint],
-                timeout=120,
+            return self._run_privileged_steps(
+                [
+                    _PrivilegedStepSpec(
+                        step=f"Ensure mountpoint directory {expected_mountpoint}",
+                        command=["mkdir", "-p", expected_mountpoint],
+                    ),
+                    _PrivilegedStepSpec(
+                        step=f"Mount {device} to {expected_mountpoint}",
+                        command=["mount", device, expected_mountpoint],
+                    ),
+                ],
+                timeout=420,
                 retry_attempts=1,
             )
-            steps.append(mkdir_step)
-            if not mkdir_step.ok:
-                return steps
 
-            mount_step = self._run_privileged_step(
-                step=f"Mount {device} to {expected_mountpoint}",
-                command=["mount", device, expected_mountpoint],
+        return [
+            self._run_privileged_step(
+                step=f"Mount {device}",
+                command=["mount", device],
                 timeout=300,
                 retry_attempts=1,
             )
-            steps.append(mount_step)
-            return steps
-
-        mount_step = self._run_privileged_step(
-            step=f"Mount {device}",
-            command=["mount", device],
-            timeout=300,
-            retry_attempts=1,
-        )
-        steps.append(mount_step)
-        return steps
+        ]
 
     def _verify_mount_step(self, *, device: str, expected_mountpoint: str) -> PartitionFixStepResult:
         result = run_command(["findmnt", "-rn", "-S", device, "-o", "TARGET"], timeout=15)
