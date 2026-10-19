@@ -1,2 +1,2 @@
-"""UI components for Ubuntu System Manager."""
+"""UI components for System Center."""
 

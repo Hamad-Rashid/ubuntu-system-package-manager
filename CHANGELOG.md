@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.7 - 2026-10-19
+
+- Rename the user-facing application to “System Center” while keeping the package and command name unchanged for upgrade compatibility.
+- Update the desktop entry and administrator authentication prompt to use the new application name.
+
 ## 0.5.6 - 2026-10-19
 
 - Add a PolicyKit action with the friendly “Ubuntu System Manager” name for the startup administrator prompt.

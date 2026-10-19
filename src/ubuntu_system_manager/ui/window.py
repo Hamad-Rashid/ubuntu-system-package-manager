@@ -34,7 +34,7 @@ from ubuntu_system_manager.services.system_info import SystemInfoService
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application) -> None:
         super().__init__(application=app)
-        self.set_title("Ubuntu System Manager")
+        self.set_title("System Center")
         self.set_default_size(1300, 860)
 
         self._system_service = SystemInfoService()

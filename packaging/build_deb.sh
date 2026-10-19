@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG_NAME="ubuntu-system-manager"
-VERSION="${1:-0.5.6}"
+VERSION="${1:-0.5.7}"
 ARCH="${2:-$(dpkg --print-architecture)}"
 OUTPUT_DIR="${ROOT_DIR}/dist"
 STAGE_DIR="$(mktemp -d)"
@@ -48,7 +48,7 @@ cat > "${PKG_DIR}/usr/share/applications/ubuntu-system-manager.desktop" <<'DESKT
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=Ubuntu System Manager
+Name=System Center
 Comment=System packages, mounts, bluetooth and health actions
 Exec=ubuntu-system-manager
 Icon=ubuntu-system-manager
@@ -63,8 +63,8 @@ cat > "${PKG_DIR}/usr/share/polkit-1/actions/com.hamad.UbuntuSystemManager.polic
 <!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
 <policyconfig>
   <action id="com.hamad.UbuntuSystemManager.admin">
-    <description>Ubuntu System Manager</description>
-    <message>Authentication is needed to run Ubuntu System Manager as the super user.</message>
+    <description>System Center</description>
+    <message>Authentication is needed to run System Center as the super user.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
