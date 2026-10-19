@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Private command helper launched once through PolicyKit."""
 
 from __future__ import annotations

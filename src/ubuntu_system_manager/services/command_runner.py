@@ -4,7 +4,6 @@ import json
 import os
 import select
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -82,7 +81,7 @@ class PrivilegedSession:
         helper_path = os.path.join(os.path.dirname(__file__), "privileged_helper.py")
         try:
             process = subprocess.Popen(
-                ["pkexec", sys.executable, helper_path],
+                ["pkexec", helper_path],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

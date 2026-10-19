@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG_NAME="ubuntu-system-manager"
-VERSION="${1:-0.5.5}"
+VERSION="${1:-0.5.6}"
 ARCH="${2:-$(dpkg --print-architecture)}"
 OUTPUT_DIR="${ROOT_DIR}/dist"
 STAGE_DIR="$(mktemp -d)"
@@ -20,6 +20,7 @@ mkdir -p \
   "${PKG_DIR}${APP_DIR}" \
   "${PKG_DIR}/usr/bin" \
   "${PKG_DIR}/usr/share/applications" \
+  "${PKG_DIR}/usr/share/polkit-1/actions" \
   "${PKG_DIR}/usr/share/icons/hicolor/scalable/apps"
 
 cp -a \
@@ -56,6 +57,24 @@ Categories=System;Utility;
 StartupNotify=true
 DESKTOP
 chmod 0644 "${PKG_DIR}/usr/share/applications/ubuntu-system-manager.desktop"
+
+cat > "${PKG_DIR}/usr/share/polkit-1/actions/com.hamad.UbuntuSystemManager.policy" <<'POLICY'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<policyconfig>
+  <action id="com.hamad.UbuntuSystemManager.admin">
+    <description>Ubuntu System Manager</description>
+    <message>Authentication is needed to run Ubuntu System Manager as the super user.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/ubuntu-system-manager/src/ubuntu_system_manager/services/privileged_helper.py</annotate>
+  </action>
+</policyconfig>
+POLICY
+chmod 0644 "${PKG_DIR}/usr/share/polkit-1/actions/com.hamad.UbuntuSystemManager.policy"
 
 cat > "${PKG_DIR}/DEBIAN/control" <<CONTROL
 Package: ${PKG_NAME}

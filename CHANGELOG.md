@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.6 - 2026-10-19
+
+- Add a PolicyKit action with the friendly “Ubuntu System Manager” name for the startup administrator prompt.
+- Run the persistent privileged helper through its own executable entrypoint instead of displaying the Python command path.
+
 ## 0.5.5 - 2026-10-19
 
 - Keep the app open after an incorrect administrator password and retry authentication.
