@@ -52,6 +52,20 @@ class CommandRunnerTests(unittest.TestCase):
         self.assertEqual(result.command, [])
         self.assertIn("No command provided", result.stderr)
 
+    def test_run_privileged_command_reuses_authenticated_session(self) -> None:
+        session = mock.Mock()
+        session.execute.return_value = CommandResult(ok=True, stdout="ok", stderr="", code=0)
+        with (
+            mock.patch("ubuntu_system_manager.services.command_runner._privileged_session", session),
+            mock.patch("ubuntu_system_manager.services.command_runner.run_command") as mock_run,
+        ):
+            result = run_privileged_command(["mount", "/dev/sda1"], timeout=33)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.command, ["pkexec", "mount", "/dev/sda1"])
+        session.execute.assert_called_once_with(["mount", "/dev/sda1"], timeout=33)
+        mock_run.assert_not_called()
+
     def test_run_privileged_command_serializes_operations(self) -> None:
         def slow_run(_args: list[str], timeout: int = 20) -> CommandResult:
             time.sleep(0.2)

@@ -71,7 +71,7 @@ Action states:
 ### 4.4 Partition Health + Mount Error Module
 Purpose:
 - Detect partitions that fail to mount or have filesystem errors
-- Apply a dedicated fix path for `/media/hamad/other` using a custom script
+- Apply a dedicated inline fix path for `/media/hamad/other`
 
 Checks:
 - Enumerate partitions: `lsblk -f`
@@ -99,8 +99,8 @@ Fix button behavior:
 
 Fix workflow (per filesystem type):
 - Dedicated rule for `/media/hamad/other`:
-  - Run `/media/hamad/Office/diskfix.sh` as the first and required fix method
-  - If script exit code is non-zero or mount still fails after script run, mark status as `Fix failed` and show actionable error details
+  - Run the inline equivalent of `mount -t ntfs-3g /dev/sda1 /media/hamad/Other` as the fallback mount method
+  - If the mount fails or the partition still fails to mount, mark status as `Fix failed` and show actionable error details
 - ext2/3/4:
   - Unmount if mounted safely
   - `fsck -y /dev/<partition>`
@@ -117,7 +117,7 @@ All modifying commands go through a single privileged runner:
 - Enable/Disable package or service
 - Clear package caches (APT + Snap)
 - Filesystem repair and remount
-- Custom disk fix script execution: `/media/hamad/Office/diskfix.sh`
+- Inline special NTFS fallback mount workflow for `/media/hamad/Other`
 
 Runner requirements:
 - Queue operations (avoid apt lock conflicts)
@@ -162,17 +162,17 @@ Scope:
 Deliverable:
 - Package management actions fully working with safe UI behavior
 
-### Phase 3: Partition Fix Workflow + Custom Script Rule
+### Phase 3: Partition Fix Workflow + Inline Fallback Rule
 Scope:
 - Add active `Fix` action in partition panel
-- Implement dedicated rule for `/media/hamad/other`:
-  - First run `/media/hamad/Office/diskfix.sh`
-  - If script fails or partition still fails to mount, show `Fix failed` with error details
+- Implement dedicated inline rule for `/media/hamad/other`:
+  - Use the embedded `mount -t ntfs-3g /dev/sda1 /media/hamad/Other` fallback
+  - If the fallback fails or the partition still fails to mount, show `Fix failed` with error details
 - Add generic filesystem repair flow for other partitions (`fsck`, `ntfsfix`, remount checks)
 - Re-scan partition state after every fix attempt
 
 Deliverable:
-- End-to-end partition diagnosis and repair workflow, including your custom `diskfix.sh` path
+- End-to-end partition diagnosis and repair workflow with no external disk-fix script dependency
 
 ### Phase 4: Hardening, QA, and Packaging
 Scope:

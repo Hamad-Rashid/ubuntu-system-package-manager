@@ -15,6 +15,7 @@ NTFS_FILESYSTEMS = {"ntfs", "ntfs3", "fuseblk"}
 SPECIAL_MOUNTPOINT_PREFIX = "/media/hamad/other"
 SPECIAL_TARGET_CANONICAL = "/media/hamad/Other"
 SPECIAL_FALLBACK_DEVICE = "/dev/sda1"
+SPECIAL_FALLBACK_FILESYSTEM = "ntfs-3g"
 SYSTEM_MOUNTPOINTS = {"/", "/boot", "/boot/efi"}
 VERIFY_RETRY_ATTEMPTS = 3
 VERIFY_RETRY_DELAY_SECONDS = 0.5
@@ -368,8 +369,9 @@ class PartitionActionService:
             )
         ]
         for idx, candidate_device in enumerate(candidate_devices, start=1):
-            mount_cmd = ["mount", "-t", "ntfs-3g", candidate_device, target_mountpoint]
-            mount_step_name = f"Mount {candidate_device} to {target_mountpoint} with ntfs-3g"
+            # Inline equivalent of the former diskfix.sh fallback command.
+            mount_cmd = ["mount", "-t", SPECIAL_FALLBACK_FILESYSTEM, candidate_device, target_mountpoint]
+            mount_step_name = f"Mount {candidate_device} to {target_mountpoint} with {SPECIAL_FALLBACK_FILESYSTEM}"
             if candidate_device != device:
                 mount_step_name = f"{mount_step_name} (fallback #{idx})"
 

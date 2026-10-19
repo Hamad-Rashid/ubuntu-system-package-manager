@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
+import select
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -31,6 +35,7 @@ _privileged_lock = threading.Lock()
 _queue_state_lock = threading.Lock()
 _queue_order = count(1)
 _queued_ticket_ids: list[int] = []
+_privileged_session: "PrivilegedSession | None" = None
 RETRYABLE_ERROR_TOKENS = (
     "could not get lock",
     "unable to acquire the dpkg frontend lock",
@@ -68,6 +73,104 @@ def is_retryable_failure(stderr: str, stdout: str = "") -> bool:
     return any(token in text for token in RETRYABLE_ERROR_TOKENS)
 
 
+class PrivilegedSession:
+    def __init__(self, process: subprocess.Popen[str]) -> None:
+        self._process = process
+
+    @classmethod
+    def start(cls, timeout: int = 30) -> tuple["PrivilegedSession | None", CommandResult]:
+        helper_path = os.path.join(os.path.dirname(__file__), "privileged_helper.py")
+        try:
+            process = subprocess.Popen(
+                ["pkexec", sys.executable, helper_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+        except OSError as exc:
+            return None, CommandResult(False, "", str(exc), 1)
+
+        session = cls(process)
+        result = session.execute(["true"], timeout=timeout)
+        if result.ok:
+            return session, result
+        session.close()
+        return None, result
+
+    def execute(self, args: list[str], timeout: int) -> CommandResult:
+        if self._process.poll() is not None:
+            return CommandResult(False, "", "Privileged session is no longer running.", 1)
+        if self._process.stdin is None or self._process.stdout is None:
+            return CommandResult(False, "", "Privileged session pipes are unavailable.", 1)
+
+        try:
+            self._process.stdin.write(json.dumps({"args": args, "timeout": timeout}) + "\n")
+            self._process.stdin.flush()
+            response_line = self._readline_with_timeout(timeout)
+            if response_line is None:
+                return CommandResult(False, "", "Privileged command timed out.", 1)
+            if not response_line:
+                stderr = "Privileged session exited before returning a result."
+                if self._process.stderr is not None:
+                    stderr_text = self._process.stderr.read().strip()
+                    if stderr_text:
+                        stderr = stderr_text
+                return CommandResult(False, "", stderr, 1)
+            payload = json.loads(response_line)
+            return CommandResult(
+                bool(payload.get("ok", False)),
+                str(payload.get("stdout", "")).strip(),
+                str(payload.get("stderr", "")).strip(),
+                int(payload.get("code", 1)),
+            )
+        except (BrokenPipeError, OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            return CommandResult(False, "", str(exc), 1)
+
+    def _readline_with_timeout(self, timeout: int) -> str | None:
+        if self._process.stdout is None:
+            return ""
+        ready, _, _ = select.select([self._process.stdout], [], [], max(timeout, 1))
+        if not ready:
+            return None
+        return self._process.stdout.readline()
+
+    def close(self) -> None:
+        if self._process.stdin is not None:
+            try:
+                self._process.stdin.close()
+            except OSError:
+                pass
+        try:
+            self._process.terminate()
+            self._process.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                self._process.kill()
+            except OSError:
+                pass
+
+
+def initialize_privileged_session(timeout: int = 30) -> CommandResult:
+    global _privileged_session
+    with _privileged_lock:
+        if _privileged_session is not None:
+            return CommandResult(True, "", "", 0)
+        session, result = PrivilegedSession.start(timeout=timeout)
+        if session is not None:
+            _privileged_session = session
+        return result
+
+
+def shutdown_privileged_session() -> None:
+    global _privileged_session
+    with _privileged_lock:
+        if _privileged_session is not None:
+            _privileged_session.close()
+            _privileged_session = None
+
+
 def run_privileged_command(args: list[str], timeout: int = 20) -> PrivilegedCommandResult:
     if not args:
         return PrivilegedCommandResult(
@@ -93,7 +196,10 @@ def run_privileged_command(args: list[str], timeout: int = 20) -> PrivilegedComm
             if ticket_id in _queued_ticket_ids:
                 _queued_ticket_ids.remove(ticket_id)
 
-        result = run_command(command, timeout=timeout)
+        if _privileged_session is not None:
+            result = _privileged_session.execute(args if args[0] != "pkexec" else args[1:], timeout=timeout)
+        else:
+            result = run_command(command, timeout=timeout)
         finished_at = datetime.now()
 
     queue_wait_seconds = max((started_at - queued_at).total_seconds(), 0.0)

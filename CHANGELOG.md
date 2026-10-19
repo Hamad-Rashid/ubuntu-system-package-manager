@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.4 - 2026-10-19
+
+- Authenticate once when the app opens and reuse a private privileged helper for all modifying actions until the app exits.
+- Disable privileged action controls until administrator authentication succeeds.
+- Close the helper on application shutdown so authorization is not retained after quitting.
+- Enforce command timeouts inside the persistent helper.
+- Embed the special NTFS fallback mount command directly in the application instead of depending on `diskfix.sh`.
+
 ## 0.5.3 - 2026-07-13
 
 - Batched multi-step partition mount workflows into a single privileged `pkexec` operation so users are prompted for administrator authentication once per mount/fix action instead of once per internal command.

@@ -17,6 +17,7 @@ from ubuntu_system_manager.models import (
     SystemMetrics,
 )
 from ubuntu_system_manager.services.bluetooth_service import BluetoothService
+from ubuntu_system_manager.services.command_runner import initialize_privileged_session
 from ubuntu_system_manager.services.package_action_service import (
     PackageActionResult,
     PackageActionService,
@@ -46,6 +47,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="phase2-worker")
         self._refresh_inflight = False
         self._operation_inflight = False
+        self._privileged_initializing = True
+        self._privileged_ready = False
         self._refresh_generation = 0
         self._packages: list[PackageEntry] = []
         self._package_search_query = ""
@@ -58,6 +61,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._partition_log_lines: list[str] = []
 
         self._build_ui()
+        self._start_privileged_session()
         self._start_refresh(reason="startup")
         GLib.timeout_add_seconds(60, self._on_auto_refresh_timer)
 
@@ -411,6 +415,29 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_manual_refresh_clicked(self, _button: Gtk.Button) -> None:
         self._start_refresh(reason="manual")
+
+    def _start_privileged_session(self) -> None:
+        self.status_label.set_text("Requesting administrator privileges for this session...")
+        future = self._executor.submit(initialize_privileged_session)
+        future.add_done_callback(lambda fut: GLib.idle_add(self._on_privileged_session_ready, fut))
+
+    def _on_privileged_session_ready(self, future: Future[Any]) -> bool:
+        self._privileged_initializing = False
+        try:
+            result = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self._privileged_ready = False
+            self.status_label.set_text(f"Administrator authentication failed: {exc}")
+        else:
+            self._privileged_ready = result.ok
+            if result.ok:
+                self.status_label.set_text("Administrator privileges enabled for this session.")
+            else:
+                self.status_label.set_text(
+                    "Administrator authentication was canceled or failed. Actions are disabled."
+                )
+        self._update_controls_state()
+        return False
 
     def _on_auto_refresh_timer(self) -> bool:
         self._start_refresh(reason="auto")
@@ -993,6 +1020,9 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.present()
 
     def _run_package_action(self, action: str, package: PackageEntry) -> None:
+        if not self._privileged_ready:
+            self.status_label.set_text("Administrator privileges are not available for this session.")
+            return
         if self._operation_inflight:
             self.status_label.set_text("Another package operation is already running.")
             return
@@ -1010,6 +1040,9 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
     def _run_update_all_action(self, packages: list[PackageEntry]) -> None:
+        if not self._privileged_ready:
+            self.status_label.set_text("Administrator privileges are not available for this session.")
+            return
         if self._operation_inflight:
             self.status_label.set_text("Another package operation is already running.")
             return
@@ -1028,6 +1061,9 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
     def _run_clear_cache_action(self) -> None:
+        if not self._privileged_ready:
+            self.status_label.set_text("Administrator privileges are not available for this session.")
+            return
         if self._operation_inflight:
             self.status_label.set_text("Another package operation is already running.")
             return
@@ -1041,6 +1077,9 @@ class MainWindow(Adw.ApplicationWindow):
         future.add_done_callback(lambda fut: GLib.idle_add(self._on_clear_cache_done, fut))
 
     def _run_partition_fix_action(self, partition: PartitionEntry) -> None:
+        if not self._privileged_ready:
+            self.status_label.set_text("Administrator privileges are not available for this session.")
+            return
         if self._operation_inflight:
             self.status_label.set_text("Another privileged operation is already running.")
             return
@@ -1056,6 +1095,9 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
     def _run_partition_mount_action(self, partition: PartitionEntry) -> None:
+        if not self._privileged_ready:
+            self.status_label.set_text("Administrator privileges are not available for this session.")
+            return
         if self._operation_inflight:
             self.status_label.set_text("Another privileged operation is already running.")
             return
@@ -1312,7 +1354,7 @@ class MainWindow(Adw.ApplicationWindow):
         refresh_sensitive = not self._refresh_inflight and not self._operation_inflight
         self.refresh_button.set_sensitive(refresh_sensitive)
         panel_sensitive = not self._refresh_inflight and not self._operation_inflight
-        package_panel_sensitive = panel_sensitive
+        package_panel_sensitive = panel_sensitive and self._privileged_ready
         self.package_notebook.set_sensitive(package_panel_sensitive)
         self.package_controls_row.set_sensitive(package_panel_sensitive)
         self.partition_listbox.set_sensitive(panel_sensitive)
@@ -1325,7 +1367,10 @@ class MainWindow(Adw.ApplicationWindow):
             self.update_all_button.set_tooltip_text("No updates available.")
         self.clear_cache_button.set_tooltip_text("Clear all APT and Snap cache data.")
 
-        if self._refresh_inflight:
+        if self._privileged_initializing:
+            self.activity_label.set_text("Authenticating")
+            self.activity_spinner.start()
+        elif self._refresh_inflight:
             self.activity_label.set_text("Refreshing")
             self.activity_spinner.start()
         elif self._operation_inflight:

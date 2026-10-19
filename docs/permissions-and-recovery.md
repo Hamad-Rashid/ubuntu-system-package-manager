@@ -2,7 +2,15 @@
 
 ## Privileged operations
 
-The app uses `pkexec` for all modifying operations:
+When the app opens, it asks for administrator authentication once and starts a private
+`pkexec` helper for the lifetime of that app process. All modifying operations reuse
+that authenticated helper, so package, mount, and filesystem actions do not prompt
+again during the same session.
+
+The helper is closed when the app quits. Opening the app again requires authentication
+again. The app never stores the administrator password.
+
+The helper runs these modifying operations:
 
 - `apt-get install --only-upgrade`
 - `apt-get remove`
@@ -21,7 +29,7 @@ Special NTFS path behavior:
 
 - For `/media/hamad/Other*` targets, the workflow uses:
   - `mount -t ntfs-3g <device> /media/hamad/Other`
-  - fallback device `/dev/sda1` when needed
+  - inline fallback `mount -t ntfs-3g /dev/sda1 /media/hamad/Other` when needed
 - Verification is retried briefly to avoid false negatives from delayed mount visibility.
 
 ## Common failure hints

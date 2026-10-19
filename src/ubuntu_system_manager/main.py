@@ -8,6 +8,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw  # noqa: E402
 
+from ubuntu_system_manager.services.command_runner import shutdown_privileged_session
 from ubuntu_system_manager.ui.window import MainWindow
 
 
@@ -20,6 +21,10 @@ class SystemManagerApplication(Adw.Application):
         if win is None:
             win = MainWindow(self)
         win.present()
+
+    def do_shutdown(self) -> None:
+        shutdown_privileged_session()
+        super().do_shutdown()
 
 
 def main() -> int:
