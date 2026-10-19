@@ -14,19 +14,19 @@ Desktop app for Ubuntu (GTK4 + Libadwaita) to monitor and manage:
 This is the easiest method for someone installing from your public GitHub repo.
 
 1. Open your repository Releases page.
-2. Download the latest `.deb` file (example: `ubuntu-system-manager_0.5.4_amd64.deb`).
+2. Download the latest `.deb` file (example: `ubuntu-system-manager_0.5.5_amd64.deb`).
 3. Install and run:
 
 ```bash
 sudo apt update
-sudo apt install -y ./ubuntu-system-manager_0.5.4_amd64.deb
+sudo apt install -y ./ubuntu-system-manager_0.5.5_amd64.deb
 ubuntu-system-manager
 ```
 
 If the `.deb` is in another folder, use full path:
 
 ```bash
-sudo apt install -y /path/to/ubuntu-system-manager_0.5.4_amd64.deb
+sudo apt install -y /path/to/ubuntu-system-manager_0.5.5_amd64.deb
 ```
 
 ## Install Directly From GitHub Release URL
@@ -34,11 +34,11 @@ sudo apt install -y /path/to/ubuntu-system-manager_0.5.4_amd64.deb
 Replace `<user>`, `<repo>`, and version/tag as needed.
 
 ```bash
-wget -O /tmp/ubuntu-system-manager_0.5.4_amd64.deb \
-  https://github.com/<user>/<repo>/releases/download/v0.5.4/ubuntu-system-manager_0.5.4_amd64.deb
+wget -O /tmp/ubuntu-system-manager_0.5.5_amd64.deb \
+  https://github.com/<user>/<repo>/releases/download/v0.5.5/ubuntu-system-manager_0.5.5_amd64.deb
 
 sudo apt update
-sudo apt install -y /tmp/ubuntu-system-manager_0.5.4_amd64.deb
+sudo apt install -y /tmp/ubuntu-system-manager_0.5.5_amd64.deb
 ubuntu-system-manager
 ```
 
@@ -66,12 +66,12 @@ cd <repo>/ubuntu-system-manager
 
 ```bash
 cd /media/hamad/Office/hamad/ubuntu-system-manager
-./packaging/build_deb.sh 0.5.4
+./packaging/build_deb.sh 0.5.5
 ```
 
 Output:
 
-- `dist/ubuntu-system-manager_0.5.4_amd64.deb` (architecture depends on build machine)
+- `dist/ubuntu-system-manager_0.5.5_amd64.deb` (architecture depends on build machine)
   (The build script removes `dist/ubuntu-system-manager_*.deb` before packaging, so the folder only contains the latest artifact.)
 
 ## Publish A New Release (Maintainer)

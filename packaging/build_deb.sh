@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG_NAME="ubuntu-system-manager"
-VERSION="${1:-0.5.4}"
+VERSION="${1:-0.5.5}"
 ARCH="${2:-$(dpkg --print-architecture)}"
 OUTPUT_DIR="${ROOT_DIR}/dist"
 STAGE_DIR="$(mktemp -d)"

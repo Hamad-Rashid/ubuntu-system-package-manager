@@ -17,7 +17,7 @@ The helper runs these modifying operations:
 - `snap refresh/remove/enable/disable`
 - `mount`, `umount`, `fsck`, `ntfsfix`, `mkdir`
 
-If authentication is canceled or denied, the operation fails safely and logs the exact command and stderr tail.
+If the startup authentication dialog is canceled, the app closes immediately. If authentication fails because of an incorrect password, the dialog is presented again; the app remains closed to actions until authentication succeeds. The app logs command failures with the exact command and stderr tail.
 
 ## Mount/Fix behavior
 

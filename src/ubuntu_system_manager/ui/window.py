@@ -428,16 +428,39 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception as exc:  # noqa: BLE001
             self._privileged_ready = False
             self.status_label.set_text(f"Administrator authentication failed: {exc}")
+            self._quit_after_privileged_auth_failure()
+            return False
         else:
             self._privileged_ready = result.ok
             if result.ok:
                 self.status_label.set_text("Administrator privileges enabled for this session.")
+            elif result.code == 127:
+                self._privileged_initializing = True
+                self.status_label.set_text("Administrator authentication failed. Please try again.")
+                self._update_controls_state()
+                GLib.timeout_add(250, self._retry_privileged_session)
+                return False
+            elif result.code == 126:
+                self.status_label.set_text("Administrator authentication canceled. Closing app.")
+                self._quit_after_privileged_auth_failure()
+                return False
             else:
-                self.status_label.set_text(
-                    "Administrator authentication was canceled or failed. Actions are disabled."
-                )
+                self.status_label.set_text("Administrator authentication was canceled or failed. Closing app.")
+                self._quit_after_privileged_auth_failure()
+                return False
         self._update_controls_state()
         return False
+
+    def _retry_privileged_session(self) -> bool:
+        self._start_privileged_session()
+        return False
+
+    def _quit_after_privileged_auth_failure(self) -> None:
+        application = self.get_application()
+        if application is not None:
+            application.quit()
+        else:
+            self.close()
 
     def _on_auto_refresh_timer(self) -> bool:
         self._start_refresh(reason="auto")

@@ -101,7 +101,12 @@ class PrivilegedSession:
 
     def execute(self, args: list[str], timeout: int) -> CommandResult:
         if self._process.poll() is not None:
-            return CommandResult(False, "", "Privileged session is no longer running.", 1)
+            return CommandResult(
+                False,
+                "",
+                "Privileged session is no longer running.",
+                self._process.poll() or 1,
+            )
         if self._process.stdin is None or self._process.stdout is None:
             return CommandResult(False, "", "Privileged session pipes are unavailable.", 1)
 
@@ -117,7 +122,7 @@ class PrivilegedSession:
                     stderr_text = self._process.stderr.read().strip()
                     if stderr_text:
                         stderr = stderr_text
-                return CommandResult(False, "", stderr, 1)
+                return CommandResult(False, "", stderr, self._process.poll() or 1)
             payload = json.loads(response_line)
             return CommandResult(
                 bool(payload.get("ok", False)),
