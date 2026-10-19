@@ -14,7 +14,7 @@ from ubuntu_system_manager.ui.window import MainWindow
 
 class SystemManagerApplication(Adw.Application):
     def __init__(self) -> None:
-        super().__init__(application_id="com.hamad.UbuntuSystemManager", flags=0)
+        super().__init__(application_id="com.hamad.SystemCenter", flags=0)
 
     def do_activate(self) -> None:
         win = self.props.active_window

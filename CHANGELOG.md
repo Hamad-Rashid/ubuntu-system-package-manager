@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.8 - 2026-10-19
+
+- Use the distribution-neutral desktop and application identity `System Center` so desktop trays and launchers no longer retain the legacy Ubuntu System Manager label.
+- Keep the `ubuntu-system-manager` package and command names unchanged for upgrade compatibility.
+
 ## 0.5.7 - 2026-10-19
 
 - Rename the user-facing application to “System Center” while keeping the package and command name unchanged for upgrade compatibility.

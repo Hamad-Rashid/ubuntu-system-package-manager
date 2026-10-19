@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG_NAME="ubuntu-system-manager"
-VERSION="${1:-0.5.7}"
+VERSION="${1:-0.5.8}"
 ARCH="${2:-$(dpkg --print-architecture)}"
 OUTPUT_DIR="${ROOT_DIR}/dist"
 STAGE_DIR="$(mktemp -d)"
@@ -44,7 +44,7 @@ exec python3 -m ubuntu_system_manager.main "$@"
 LAUNCHER
 chmod 0755 "${PKG_DIR}/usr/bin/ubuntu-system-manager"
 
-cat > "${PKG_DIR}/usr/share/applications/ubuntu-system-manager.desktop" <<'DESKTOP'
+cat > "${PKG_DIR}/usr/share/applications/system-center.desktop" <<'DESKTOP'
 [Desktop Entry]
 Version=1.0
 Type=Application
@@ -55,14 +55,15 @@ Icon=ubuntu-system-manager
 Terminal=false
 Categories=System;Utility;
 StartupNotify=true
+StartupWMClass=com.hamad.SystemCenter
 DESKTOP
-chmod 0644 "${PKG_DIR}/usr/share/applications/ubuntu-system-manager.desktop"
+chmod 0644 "${PKG_DIR}/usr/share/applications/system-center.desktop"
 
-cat > "${PKG_DIR}/usr/share/polkit-1/actions/com.hamad.UbuntuSystemManager.policy" <<'POLICY'
+cat > "${PKG_DIR}/usr/share/polkit-1/actions/com.hamad.SystemCenter.policy" <<'POLICY'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
 <policyconfig>
-  <action id="com.hamad.UbuntuSystemManager.admin">
+  <action id="com.hamad.SystemCenter.admin">
     <description>System Center</description>
     <message>Authentication is needed to run System Center as the super user.</message>
     <defaults>
@@ -74,7 +75,7 @@ cat > "${PKG_DIR}/usr/share/polkit-1/actions/com.hamad.UbuntuSystemManager.polic
   </action>
 </policyconfig>
 POLICY
-chmod 0644 "${PKG_DIR}/usr/share/polkit-1/actions/com.hamad.UbuntuSystemManager.policy"
+chmod 0644 "${PKG_DIR}/usr/share/polkit-1/actions/com.hamad.SystemCenter.policy"
 
 cat > "${PKG_DIR}/DEBIAN/control" <<CONTROL
 Package: ${PKG_NAME}
